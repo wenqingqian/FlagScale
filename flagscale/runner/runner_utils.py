@@ -116,11 +116,16 @@ def run_local_command(cmd, dryrun=False, query=False):
             sys.exit(result.returncode)
 
 
-def run_ssh_command(host, cmd, port=None, dryrun=False, query=False):
+def run_ssh_command(host, cmd, port=None, dryrun=False, query=False, docker=None, ssh_password=None):
+    if docker:
+        cmd = f"docker exec {docker["container"]} sh -c \"cd {docker["workspace"]} && {cmd}\""
     if port:
         ssh_cmd = f"ssh -f -n -p {port} {host} '{cmd}'"
     else:
         ssh_cmd = f"ssh -f -n {host} '{cmd}'"
+    if ssh_password is not None:
+        ssh_cmd = f"sshpass -p {ssh_password} {ssh_cmd}"
+
     if not query:
         logger.info(f"Running the ssh command: {ssh_cmd}")
     if dryrun:
@@ -251,3 +256,20 @@ def add_decive_extra_config(config, device_type):
         else:
             cur_node_config[key] = value
     return cur_node_config
+
+def get_ssh_password(ssh_password_path):
+    if ssh_password_path is None or not os.path.isfile(ssh_password_path):
+        return None
+    
+    with open(ssh_password_path, 'r') as file:
+        content = file.read().strip()
+        
+        if ' ' in content:
+            log_and_raise_error(
+                "SSH Password have abundant space"
+            )
+        if '\n' in content:
+            log_and_raise_error(
+                "SSH Password have invaild char \\n"
+            )
+        return content

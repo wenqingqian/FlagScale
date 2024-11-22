@@ -18,6 +18,7 @@ from flagscale.runner.runner_utils import (
     run_local_command,
     run_scp_command,
     run_ssh_command,
+    get_ssh_password
 )
 
 
@@ -119,7 +120,11 @@ def _get_runner_cmd_train(
         node_rank = 0
         master_addr = "localhost"
 
+    rdzv_open = runner_config.get("rdzv_open", False)
+    rdzv_backend = runner_config.get("rdzv_backend", "c10d")
+    rdzv_endpoint = runner_config.get("rdzv_endpoint", f"{master_addr}:{master_port}")
     rdzv_id = runner_config.get("rdzv_id", "default")
+
     log_dir = runner_config.get("log_dir", logging_config.details_dir)
     log_dir = os.path.abspath(log_dir)
     no_shared_fs = config.experiment.get("no_shared_fs", False)
@@ -128,8 +133,6 @@ def _get_runner_cmd_train(
     else:
         log_dir = os.path.join(log_dir, f"host_{node_rank}_{host}")
     log_dir = os.path.join(log_dir, datetime.now().strftime("%Y%m%d_%H%M%S.%f"))
-    rdzv_backend = runner_config.get("rdzv_backend", "c10d")
-    rdzv_endpoint = runner_config.get("rdzv_endpoint", f"{master_addr}:{master_port}")
     redirect = runner_config.get("redirects", "3")
     tee = runner_config.get("tee", "3")
     backend = runner_config.get("backend", "torchrun")
@@ -149,14 +152,19 @@ def _get_runner_cmd_train(
         del runner_args["master_port"]
     if "ssh_port" in runner_args:
         del runner_args["ssh_port"]
-    runner_args["rdzv_id"] = rdzv_id
-    # runner_args["master_addr"] = master_addr
-    # runner_args["master_port"] = master_port
+
+    if rdzv_open:
+        runner_args["rdzv_id"] = rdzv_id
+        runner_args["rdzv_backend"] = rdzv_backend
+        runner_args["rdzv_endpoint"] = rdzv_endpoint
+    else:
+        runner_args["master_addr"] = master_addr
+        runner_args["master_port"] = master_port
+
     runner_args["nnodes"] = nnodes
     runner_args["node_rank"] = node_rank
     runner_args["nproc_per_node"] = nproc_per_node
-    runner_args["rdzv_backend"] = rdzv_backend
-    runner_args["rdzv_endpoint"] = rdzv_endpoint
+
     runner_args["log_dir"] = (
         log_dir if backend == "torchrun" else os.path.join(log_dir, rdzv_id)
     )
@@ -310,6 +318,8 @@ class SSHTrainRunner(RunnerBase):
         device_type=None,
         with_test=False,
         dryrun=False,
+        ssh_password=None,
+        docker=None
     ):
         export_cmd = []
 
@@ -344,7 +354,8 @@ class SSHTrainRunner(RunnerBase):
             ssh_port = self.config.experiment.runner.get("ssh_port", 22)
             # Step 1: make sure the scripts_dir exists on the remote host
             run_ssh_command(
-                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, dryrun
+                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, dryrun, 
+                docker=docker, ssh_password=ssh_password
             )
 
             # Step 2: copy the host_run_script_file to the remote host
@@ -359,7 +370,8 @@ class SSHTrainRunner(RunnerBase):
                 )
 
             # Step 3: run the host_run_script_file on the remote host
-            run_ssh_command(host, f"bash {host_run_script_file}", ssh_port, dryrun)
+            run_ssh_command(host, f"bash {host_run_script_file}", ssh_port, dryrun,
+                            docker=docker, ssh_password=ssh_password)
         else:
             run_local_command(f"bash {host_run_script_file}", dryrun)
 
@@ -367,6 +379,7 @@ class SSHTrainRunner(RunnerBase):
 
         num_visible_devices = None
         runner_config = self.config.experiment.runner
+        docker_config = self.config.experiment.docker
 
         # If hostfile is provided, use the resources from the hostfile
         if self.resources is not None:
@@ -375,6 +388,15 @@ class SSHTrainRunner(RunnerBase):
             nnodes = get_nnodes(nnodes_from_hostfile, nnodes_from_args)
             available_ip = list(self.resources.keys())[0]
             available_port = get_free_port()
+            ssh_password = get_ssh_password(runner_config.get("password_path", None))
+            if docker_config:
+                docker_open = docker_config.get("open", True)
+                if docker_open:
+                    docker = {"workspace": docker_config.get("workspace", "/workspace"),
+                              "container": docker_config.get("container", None)}
+                    if docker["container"] is None:
+                        logger.error("docker container cannot be none while docker is open")
+                        return
             for node_rank, (host, resource_info) in enumerate(self.resources.items()):
                 if node_rank >= nnodes:
                     break
@@ -392,6 +414,7 @@ class SSHTrainRunner(RunnerBase):
                 )
                 master_addr = runner_config.get("master_addr", available_ip)
                 master_port = runner_config.get("master_port", available_port)
+
                 self._run_each(
                     host,
                     master_addr,
@@ -402,6 +425,8 @@ class SSHTrainRunner(RunnerBase):
                     device_type=resource_info["type"],
                     with_test=with_test,
                     dryrun=dryrun,
+                    ssh_password=ssh_password,
+                    docker=docker
                 )
         else:
             # If hostfile is not provided, run the job on localhost
