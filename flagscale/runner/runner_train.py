@@ -307,6 +307,19 @@ class SSHTrainRunner(RunnerBase):
         logger.info("\n************** configuration **************")
         logger.info(f"\n{OmegaConf.to_yaml(self.config)}")
 
+        runner_config = self.config.experiment.runner 
+        docker_config = self.config.experiment.docker
+        self.ssh_password = get_ssh_password(runner_config.get("password_path", None))
+        self.docker = None
+        if docker_config:
+            docker_open = docker_config.get("open", True)
+            if docker_open:
+                self.docker = {"workspace": docker_config.get("workspace", "/workspace"),
+                            "container": docker_config.get("container", None)}
+                if self.docker["container"] is None:
+                    logger.error("docker container cannot be none while docker is open")
+                    raise SystemExit
+
     def _run_each(
         self,
         host,
@@ -318,8 +331,6 @@ class SSHTrainRunner(RunnerBase):
         device_type=None,
         with_test=False,
         dryrun=False,
-        ssh_password=None,
-        docker=None
     ):
         export_cmd = []
 
@@ -355,7 +366,7 @@ class SSHTrainRunner(RunnerBase):
             # Step 1: make sure the scripts_dir exists on the remote host
             run_ssh_command(
                 host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, dryrun, 
-                docker=docker, ssh_password=ssh_password
+                docker=self.docker, ssh_password=self.ssh_password
             )
 
             # Step 2: copy the host_run_script_file to the remote host
@@ -371,7 +382,7 @@ class SSHTrainRunner(RunnerBase):
 
             # Step 3: run the host_run_script_file on the remote host
             run_ssh_command(host, f"bash {host_run_script_file}", ssh_port, dryrun,
-                            docker=docker, ssh_password=ssh_password)
+                            docker=self.docker, ssh_password=self.ssh_password)
         else:
             run_local_command(f"bash {host_run_script_file}", dryrun)
 
@@ -379,7 +390,6 @@ class SSHTrainRunner(RunnerBase):
 
         num_visible_devices = None
         runner_config = self.config.experiment.runner
-        docker_config = self.config.experiment.docker
 
         # If hostfile is provided, use the resources from the hostfile
         if self.resources is not None:
@@ -388,15 +398,6 @@ class SSHTrainRunner(RunnerBase):
             nnodes = get_nnodes(nnodes_from_hostfile, nnodes_from_args)
             available_ip = list(self.resources.keys())[0]
             available_port = get_free_port()
-            ssh_password = get_ssh_password(runner_config.get("password_path", None))
-            if docker_config:
-                docker_open = docker_config.get("open", True)
-                if docker_open:
-                    docker = {"workspace": docker_config.get("workspace", "/workspace"),
-                              "container": docker_config.get("container", None)}
-                    if docker["container"] is None:
-                        logger.error("docker container cannot be none while docker is open")
-                        return
             for node_rank, (host, resource_info) in enumerate(self.resources.items()):
                 if node_rank >= nnodes:
                     break
@@ -425,8 +426,6 @@ class SSHTrainRunner(RunnerBase):
                     device_type=resource_info["type"],
                     with_test=with_test,
                     dryrun=dryrun,
-                    ssh_password=ssh_password,
-                    docker=docker
                 )
         else:
             # If hostfile is not provided, run the job on localhost
@@ -475,7 +474,8 @@ class SSHTrainRunner(RunnerBase):
         if host != "localhost":
             ssh_port = self.config.experiment.runner.get("ssh_port", 22)
             # Step 1: make sure the scripts_dir exists on the remote host
-            run_ssh_command(host, f"mkdir -p {logging_config.scripts_dir}", ssh_port)
+            run_ssh_command(host, f"mkdir -p {logging_config.scripts_dir}", ssh_port,
+                            docker=self.docker, ssh_password=self.ssh_password)
             # Step 2: copy the host_run_script_file to the remote host
             no_shared_fs = self.config.experiment.runner.get("no_shared_fs", False)
             if no_shared_fs:
@@ -483,7 +483,8 @@ class SSHTrainRunner(RunnerBase):
                     host, host_stop_script_file, logging_config.scripts_dir, ssh_port
                 )
             # Step 3: run the host_run_script_file on the remote host
-            run_ssh_command(host, f"bash {host_stop_script_file}", ssh_port)
+            run_ssh_command(host, f"bash {host_stop_script_file}", ssh_port,
+                            docker=self.docker, ssh_password=self.ssh_password)
         else:
             run_local_command(f"bash {host_stop_script_file}")
 
@@ -574,7 +575,8 @@ class SSHTrainRunner(RunnerBase):
             ssh_port = self.config.experiment.runner.get("ssh_port", 22)
             # Step 1: make sure the scripts_dir exists on the remote host
             run_ssh_command(
-                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, query=True
+                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, query=True,
+                docker=self.docker, ssh_password=self.ssh_password
             )
             # Step 2: copy the host_run_script_file to the remote host
             no_shared_fs = self.config.experiment.runner.get("no_shared_fs", False)
@@ -585,7 +587,8 @@ class SSHTrainRunner(RunnerBase):
             # Step 3: run the host_run_script_file on the remote host
             try:
                 result = run_ssh_command(
-                    host, f"bash {host_query_script_file}", ssh_port, query=True
+                    host, f"bash {host_query_script_file}", ssh_port, query=True,
+                    docker=self.docker, ssh_password=self.ssh_password
                 )
             except Exception as e:
                 logger.error(f"Failed to query job status on {host}: {e}")
@@ -608,7 +611,8 @@ class SSHTrainRunner(RunnerBase):
             ssh_port = self.config.experiment.runner.get("ssh_port", 22)
             # Step 1: make sure the scripts_dir exists on the remote host
             run_ssh_command(
-                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, query=True
+                host, f"mkdir -p {logging_config.scripts_dir}", ssh_port, query=True,
+                docker=self.docker, ssh_password=self.ssh_password
             )
             # Step 2: copy the host_run_script_file to the remote host
             no_shared_fs = self.config.experiment.runner.get("no_shared_fs", False)
@@ -619,7 +623,8 @@ class SSHTrainRunner(RunnerBase):
             # Step 3: run the host_run_script_file on the remote host
             try:
                 result = run_ssh_command(
-                    host, f"bash {host_query_script_file}", ssh_port, query=True
+                    host, f"bash {host_query_script_file}", ssh_port, query=True,
+                    docker=self.docker, ssh_password=self.ssh_password
                 )
             except Exception as e:
                 logger.error(f"Failed to query sub process status on {host}: {e}")
