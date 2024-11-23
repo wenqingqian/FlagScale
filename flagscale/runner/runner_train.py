@@ -315,7 +315,7 @@ class SSHTrainRunner(RunnerBase):
             docker_open = docker_config.get("open", True)
             if docker_open:
                 self.docker = {"workspace": docker_config.get("workspace", "/workspace"),
-                            "container": docker_config.get("container", None)}
+                               "container": docker_config.get("container", None)}
                 if self.docker["container"] is None:
                     logger.error("docker container cannot be none while docker is open")
                     raise SystemExit

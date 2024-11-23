@@ -118,7 +118,7 @@ def run_local_command(cmd, dryrun=False, query=False):
 
 def run_ssh_command(host, cmd, port=None, dryrun=False, query=False, docker=None, ssh_password=None):
     if docker:
-        cmd = f"docker exec {docker["container"]} sh -c \"cd {docker["workspace"]} && {cmd}\""
+        cmd = f"docker exec {docker['container']} sh -c \"cd {docker['workspace']} && {cmd}\""
     if port:
         ssh_cmd = f"ssh -f -n -p {port} {host} '{cmd}'"
     else:
