@@ -146,6 +146,8 @@ def _get_runner_cmd_train(
         del runner_args["per_node_task"]
     if "hostfile" in runner_args:
         del runner_args["hostfile"]
+    if "password_path" in runner_args:
+        del runner_args["password_path"]
     if "master_addr" in runner_args:
         del runner_args["master_addr"]
     if "master_port" in runner_args:
