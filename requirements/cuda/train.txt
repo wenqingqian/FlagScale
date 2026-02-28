@@ -1,3 +1,7 @@
 # Training-specific dependencies
 
 -r ./base.txt
+
+# Source dependencies (installed from git repos)
+# [--no-build-isolation]
+megatron-core @ git+https://github.com/flagos-ai/Megatron-LM-FL.git
