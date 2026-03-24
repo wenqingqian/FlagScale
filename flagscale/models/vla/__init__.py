@@ -1,4 +1,5 @@
 from .action_model import FlowMatchingHead
+from .gr00t_n1_5 import Gr00tN15
 from .protocols import ActionModel, VLMBackbone
 from .qwen_gr00t import QwenGr00t
 from .registry import (
@@ -18,6 +19,7 @@ __all__ = [
     "build_vlm",
     "build_action_model",
     "get_vlm_config",
+    "Gr00tN15",
     "QwenGr00t",
     "QwenVLBackbone",
     "Qwen25VLBackbone",

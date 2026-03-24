@@ -169,11 +169,6 @@ def load_checkpoint(
 
     model = model_cls(config)
 
-    # Materialize any meta tensors (from torch.device("meta") init) before loading weights.
-    has_meta = any(p.is_meta for p in model.parameters())
-    if has_meta:
-        model.to_empty(device=device)
-
     weights_path = pretrained_dir / "model.safetensors"
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights file not found: {weights_path}")
