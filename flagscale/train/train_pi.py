@@ -5,7 +5,6 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any, Iterator, TypedDict
-import wandb
 import os
 import pathlib
 import random
@@ -18,9 +17,15 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.optim import Optimizer
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim.lr_scheduler import LambdaLR
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    ShardingStrategy,
+    MixedPrecision,
+)
+from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
 
-from flagscale.runner.utils import logger
+from flagscale.logger import logger
 from flagscale.train.train_config import TrainConfig, DataConfig
 from flagscale.train.datasets.transforms import ImageTransforms
 from flagscale.train.datasets.lerobot_dataset import (
@@ -68,17 +73,33 @@ def set_seed(seed: int):
     get_platform().manual_seed_all(seed)
     if get_platform().name() == "cuda":
         torch.backends.cudnn.enabled = True
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = True 
-        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = False 
+        torch.backends.cuda.matmul.allow_tf32 = False
 
 
-def init_ddp():
+def init_distributed():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     get_platform().set_device(local_rank)
     torch.distributed.init_process_group(backend=get_platform().dist_backend(), init_method="env://")
 
     return local_rank
+
+
+def apply_fsdp(policy):
+    mp_policy = MixedPrecision(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.float32,
+        buffer_dtype=torch.bfloat16,
+    )
+    policy = FSDP(
+        policy,
+        sharding_strategy=ShardingStrategy.SHARD_GRAD_OP,
+        mixed_precision=mp_policy,
+        device_id=torch.cuda.current_device(),
+        use_orig_params=True,
+    )
+    return policy
 
 
 # TODO: (yupu) Re-enable wandb
@@ -107,7 +128,7 @@ def make_dataset(cfg: DataConfig, policy_config):
     # TODO: (yupu) Support image transforms
     enable_image_transform = False
     # TODO: (yupu) Remove hard-coded video backend
-    video_backend = "pyav"
+    video_backend = "torchcodec"
 
     image_transforms = (
         ImageTransforms(cfg.image_transforms) if enable_image_transform else None
@@ -412,8 +433,7 @@ def update_policy(
     start_time = time.perf_counter()
     policy.train()
 
-    # Get the policy model (unwrap DDP if needed) to access config
-    policy_model = policy.module if isinstance(policy, DDP) else policy
+    policy_model = policy.module if isinstance(policy, FSDP) else policy
     use_amp = getattr(policy_model.config, "use_amp", False)
 
     autocast_context = torch.amp.autocast(get_platform().amp_device_type(), dtype=torch.bfloat16) if use_amp else nullcontext()
@@ -426,17 +446,13 @@ def update_policy(
     # Clip gradients if specified
     if grad_clip_norm > 0:
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            policy.module.parameters()
-            if isinstance(policy, DDP)
-            else policy.parameters(),
+            policy.parameters(),
             grad_clip_norm,
         )
     else:
         # Compute grad norm even if not clipping
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            policy.module.parameters()
-            if isinstance(policy, DDP)
-            else policy.parameters(),
+            policy.parameters(),
             float("inf"),
             error_if_nonfinite=False,
         )
@@ -488,11 +504,12 @@ def main(config: TrainConfig, seed: int):
     policy_config.pretrained_path = config.model.checkpoint_dir
     policy_config.use_amp = config.system.use_amp
 
-    local_rank = init_ddp()
+    local_rank = init_distributed()
     device = get_platform().device(local_rank)
+
     rank = dist.get_rank()
     is_main_process = rank == 0 and local_rank == 0
-    policy_config.device = device
+    policy_config.device = str(device)
 
     if is_main_process:
         logger.info(f"Policy config ({model_name}): {policy_config}")
@@ -556,11 +573,13 @@ def main(config: TrainConfig, seed: int):
         logger.info(f"processor_kwargs: {processor_kwargs}")
         logger.info(f"postprocessor_kwargs: {postprocessor_kwargs}")
 
-    preprocessor, _ = make_pre_post_processors(
+    preprocessor, postprocessor = make_pre_post_processors(
         pretrained_path=policy_config.pretrained_path,
         **processor_kwargs,
         **postprocessor_kwargs,
     )
+
+    policy = apply_fsdp(policy)
 
     # Convert optimizer_betas to tuple if it's a list
     optimizer_betas = config.model.optimizer.betas
@@ -604,13 +623,6 @@ def main(config: TrainConfig, seed: int):
         pin_memory=True,  # Assume all data is on GPU
         drop_last=False,
         prefetch_factor=2 if num_workers > 0 else None,
-    )
-
-    policy = DDP(
-        policy,
-        device_ids=[local_rank],
-        find_unused_parameters=True,
-        output_device=local_rank,
     )
 
     dist.barrier()
@@ -680,23 +692,28 @@ def main(config: TrainConfig, seed: int):
             logger.info(f"step: {step} loss: {train_tracker}")
 
         if config.system.checkpoint.save_checkpoint and step % config.system.checkpoint.save_freq == 0:
-            # Synchronize all processes before checkpoint saving
             dist.barrier()
-
+            state_dict = get_model_state_dict(
+                policy,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
             if is_main_process:
                 logger.info(f"Saving checkpoint at step {step}")
                 output_dir = Path(config.system.checkpoint.output_directory)
                 checkpoint_dir = get_step_checkpoint_dir(
                     output_dir, config.system.train_steps, step
                 )
-                policy_to_save = policy.module
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
-                    policy=policy_to_save,
+                    step=step,
+                    config=config,
+                    policy=policy.module,
+                    lr_scheduler=lr_scheduler,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    state_dict=state_dict,
                 )
                 update_last_checkpoint(checkpoint_dir)
-
-            # Synchronize all processes after checkpoint saving
             dist.barrier()
 
     if is_main_process:
