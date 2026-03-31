@@ -1,0 +1,86 @@
+system:
+  tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1
+  use_flash_attn: True
+  use_distributed_optimizer: True
+  sequence_parallel: True
+  use_mcore_models: True
+  transformer_impl: transformer_engine
+  precision:
+    bf16: True
+    attention_softmax_in_fp32: True
+  logging:
+    log_interval: 1
+  checkpoint:
+    save_interval: 1000
+    ckpt_format: torch
+
+
+model:
+  disable_bias_linear: True
+  add_qkv_bias: True
+  num_layers: 4
+  hidden_size: 1024
+  ffn_hidden_size: 5412
+  num_attention_heads: 8
+  num_query_groups: 4
+  group_query_attention: True
+  seq_length: 8192
+  max_position_embeddings: 8192
+  swiglu: True
+  normalization: RMSNorm
+  norm_epsilon: 1e-05
+  init_method_std: 0.02
+  attention_dropout: 0.0
+  hidden_dropout: 0.0
+  clip_grad: 1.0
+  train_iters: 62
+  eval_iters: 0
+  micro_batch_size: 2
+  global_batch_size: 16
+  no_masked_softmax_fusion: True
+  untie_embeddings_and_output_weights: True
+  rotary_base: 1000000
+
+  seed: 42
+
+  recompute:
+    recompute_method: "uniform"
+    recompute_granularity: "full"
+    recompute_num_layers: 1
+  optimizer:
+    weight_decay: 0.1
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    lr_scheduler:
+      lr: 1e-4
+      min_lr: 1.0e-6
+      lr_warmup_iters: 10
+      lr_decay_style: cosine
+  
+  # specific for fl-audio
+  use_te: True
+  aud_emp_token_id: 2049
+  loss_weights: [1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  num_channel: 8
+  use_mup: True
+  input_mult: 1.0
+  output_mult: 28.0
+  mup_scale_factor: 28.0
+  depthgpt:
+    depth_n_layer: 6
+    depth_n_head: 16
+    depth_hidden_size: 1024
+    depth_dropout: 0.0
+    depth_bias: False
+  dataloader_save: null
+  shuffle_buffer_size: 0
+data:
+  data_path: /workspace/energon_test/wds
+  dataloader_type: external
+  split: 100,0,0
+  tokenizer:
+    tokenizer_type: NullTokenizer
+    tokenizer_path: None
+  vocab_size: 2050
+
