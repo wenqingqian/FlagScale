@@ -12,13 +12,16 @@ def _update_common_config(args, config):
     config.mup_scale_factor = args.mup_scale_factor
 
     # Audio-specific
-    config.vocab_size = args.vocab_size
     config.num_channel = args.num_channel
     config.aud_emp_token_id = args.aud_emp_token_id
     config.loss_weights = args.loss_weights
 
     config.micro_batch_size = args.micro_batch_size
     config.seq_length = args.seq_length
+
+    config.vocab_parallel_size = getattr(args, 'vocab_parallel_size', 1)
+    config.padded_vocab_size = args.padded_vocab_size
+    config.vocab_size = args.vocab_size
 
     return config
 

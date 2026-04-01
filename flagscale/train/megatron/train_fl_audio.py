@@ -397,6 +397,8 @@ def add_fl_audio_extra_args(parser):
     group.add_argument("--depth-hidden-size", required=True, type=int)
     group.add_argument("--depth-dropout", type=float, default=0.0)
     group.add_argument("--depth-bias", action="store_true", default=False)
+    group.add_argument("--vocab-parallel-size", type=int, default=1,
+                       help="Vocab parallel size for embedding. cp = tp_size / vp.")
 
     # Energon dataloader
     group.add_argument("--dataloader-save", type=str, default=None,

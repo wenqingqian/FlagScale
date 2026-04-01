@@ -83,4 +83,7 @@ data:
     tokenizer_type: NullTokenizer
     tokenizer_path: None
   vocab_size: 2050
+  vocab_parallel_size: 1
+  # It just working while vocab parallel size greater than 1
+  make_vocab_size_divisible_by: 64
 
