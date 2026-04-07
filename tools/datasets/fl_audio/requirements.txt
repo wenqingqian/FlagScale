@@ -1,0 +1,4 @@
+megatron-energon==7.3.2
+webdataset
+numba
+rich
