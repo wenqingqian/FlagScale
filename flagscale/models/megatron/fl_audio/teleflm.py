@@ -16,14 +16,14 @@ class TeleFLMModel(GPTModel):
     ):
         super().__init__(config=config, transformer_layer_spec=teleflm_layer_spec,
                          vocab_size=0, max_sequence_length=0,
-                         pre_process=False, post_process=False)
+                         pre_process=False, post_process=False,
+                         rotary_base=config.rotary_base)
 
         self.norm = backend.layernorm()(
             config=config,
             hidden_size=config.hidden_size,
             eps=config.layernorm_epsilon
         )
-        # TODO[WQQ] use backend
         self.embedding = ChannelParallelEmbedding(config, reduce_channel=True)
 
     def set_input_tensor(self, tensor):

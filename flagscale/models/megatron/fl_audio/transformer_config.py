@@ -37,6 +37,9 @@ def get_teleflm_config(args, config):
     config.add_bias_linear = args.add_bias_linear
     config.add_qkv_bias = args.add_qkv_bias
 
+    # RoPE
+    config.rotary_base = args.rotary_base
+    config.position_embedding_type = 'rope'
     return config
 
 
@@ -54,6 +57,7 @@ def get_depth_gpt_config(args, config):
 
     # SwiGLU intermediate: int(8 * n_embd / 3)
     if args.swiglu:
+        # config.ffn_hidden_size = int((8 * args.depth_hidden_size / 3) / 64) * 64
         config.ffn_hidden_size = int(8 * args.depth_hidden_size / 3)
         config.gated_linear_unit = True
         config.activation_func = F.silu

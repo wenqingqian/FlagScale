@@ -43,6 +43,8 @@ class FLAudioTaskEncoder(DefaultTaskEncoder[FLAudioSample, FLAudioSample,FLAudio
 
     def batch(self, samples: list[FLAudioSample]) -> FLAudioSampleBatch:
 
+        # NOTE[WQQ] Using torch.stack is more intuitive here, 
+        # but since the final data shape is fine, let's leave it like this for now.
         input_batch = torch.cat([s.audio_ids for s in samples], dim=0)
         return FLAudioSampleBatch(
             __key__   = [s.__key__ for s in samples],

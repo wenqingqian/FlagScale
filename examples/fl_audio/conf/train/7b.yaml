@@ -1,18 +1,21 @@
 system:
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1
+  data_parallel_random_init: True
   use_flash_attn: True
   use_distributed_optimizer: True
-  sequence_parallel: True
+  sequence_parallel: False
   use_mcore_models: True
+  use_te: True
   transformer_impl: transformer_engine
   precision:
     bf16: True
     attention_softmax_in_fp32: True
+    accumulate_allreduce_grads_in_fp32: True
   logging:
     log_interval: 1
   checkpoint:
-    save_interval: 1000
+    save_interval: 400
     ckpt_format: torch
 
 
@@ -34,32 +37,31 @@ model:
   attention_dropout: 0.0
   hidden_dropout: 0.0
   clip_grad: 1.0
-  train_iters: 62
+  train_iters: 1500
   eval_iters: 0
-  micro_batch_size: 2
-  global_batch_size: 16
+  micro_batch_size: 1
+  global_batch_size: 8
   no_masked_softmax_fusion: True
   untie_embeddings_and_output_weights: True
   rotary_base: 1000000
 
   seed: 42
 
-  recompute:
-    recompute_method: "uniform"
-    recompute_granularity: "full"
-    recompute_num_layers: 1
+  # recompute:
+  #   recompute_method: "uniform"
+  #   recompute_granularity: "full"
+  #   recompute_num_layers: 1
   optimizer:
-    weight_decay: 0.1
+    weight_decay: 0.01
     adam_beta1: 0.9
     adam_beta2: 0.999
     lr_scheduler:
       lr: 1e-4
-      min_lr: 1.0e-6
-      lr_warmup_iters: 10
+      min_lr: 0
+      lr_warmup_iters: 500
       lr_decay_style: cosine
   
   # specific for fl-audio
-  use_te: True
   aud_emp_token_id: 2049
   loss_weights: [1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
   num_channel: 8
@@ -73,17 +75,19 @@ model:
     depth_hidden_size: 1024
     depth_dropout: 0.0
     depth_bias: False
-  dataloader_save: null
+  vocab_parallel_size: 1
+  dataloader_save: outputs_dataloader
   shuffle_buffer_size: 0
+  # use_native_aligned_loader: True
+  # native_data_path: /workspace/NativeAudio-trainer-ddp/data/dataset/gigaspeech_align_whisper
 data:
-  data_path: /workspace/energon_test/wds
+  data_path: /workspace/energon_test/gigaspeech_wds_full
   dataloader_type: external
   split: 100,0,0
   tokenizer:
     tokenizer_type: NullTokenizer
     tokenizer_path: None
   vocab_size: 2050
-  vocab_parallel_size: 1
   # It just working while vocab parallel size greater than 1
   make_vocab_size_divisible_by: 64
 
