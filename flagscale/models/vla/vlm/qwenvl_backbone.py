@@ -20,6 +20,7 @@ from transformers import (
 
 from flagscale.logger import logger
 from flagscale.models.vla.registry import register_vlm
+from flagscale.platforms.platform_manager import get_platform
 
 
 @dataclass
@@ -142,7 +143,7 @@ class QwenVLBackbone(nn.Module):
             f"[VLM.forward] input keys={list(batch.keys())} "
             + " ".join(f"{k}={v.shape}" for k, v in batch.items() if isinstance(v, torch.Tensor))
         )
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(get_platform().amp_device_type(), dtype=torch.bfloat16):
             outputs = self.model(
                 **batch,
                 output_hidden_states=True,
@@ -205,7 +206,7 @@ class Qwen25VLBackbone(QwenVLBackbone):
 
         # Use current CUDA device instead of self.model.device, which returns
         # a DTensor device under FSDP2 and causes mixed Tensor/DTensor errors.
-        return batch_input.to(f"cuda:{torch.cuda.current_device()}")
+        return batch_input.to(get_platform().device())
 
 
 @register_vlm("qwen3-vl")
@@ -253,4 +254,4 @@ class Qwen3VLBackbone(QwenVLBackbone):
 
         # Use current CUDA device instead of self.model.device, which returns
         # a DTensor device under FSDP2 and causes mixed Tensor/DTensor errors.
-        return batch_inputs.to(f"cuda:{torch.cuda.current_device()}")
+        return batch_inputs.to(get_platform().device())
