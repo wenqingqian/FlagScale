@@ -111,6 +111,9 @@ jobs:
         run: |
           git config --global --add safe.directory $PROJECT_ROOT
 
+      - name: Check environment info
+        run: cd $PROJECT_ROOT && bash ./tests/test_utils/runners/check_env.sh
+
       - name: Install dependencies for training
         if: inputs.platform == 'cuda'
         run: |
@@ -177,13 +180,10 @@ jobs:
           echo "Environment ready for train tests"
         timeout-minutes: 30
 
-      - name: Install dependencies for serve metax
+      - name: Install dependencies for train metax
         if: inputs.platform == 'metax'
         run: |
           set -euo pipefail
-
-          # Clone FlagOS's Megatron-LM fork required by the serve task on MetaX platform
-          git clone https://github.com/flagos-ai/Megatron-LM-FL.git /workspace/Megatron-LM-FL
 
           cd $PROJECT_ROOT
 

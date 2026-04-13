@@ -17,7 +17,6 @@ system:
     log_interval: 1
     no_log_loss_scale_to_tensorboard: true
   checkpoint:
-    load: /home/gitlab-runner/checkpoints/qwen3-0.6b-mcore
     no_save_optim: true
     no_save_rng: true
     no_load_optim: true
