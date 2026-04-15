@@ -1,0 +1,145 @@
+# Copyright (c) 2025, BAAI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Layer specs for Qwen3.5 VL.
+
+This module provides the hybrid GDN + Attention layer specifications for Qwen3.5 VL.
+The architecture alternates between Gated DeltaNet (GDN) and standard Gated Attention
+layers in a repeating pattern (e.g., [GDN, GDN, GDN, Attention] × 16 for 64 layers).
+
+Key design:
+- Uses get_transformer_block_with_experimental_attention_variant_spec from Megatron-LM-main
+  to build per-layer specs with mixed attention types
+- _patch_standard_attention_specs selectively replaces only the standard attention layers
+  with Qwen35VLSelfAttention for mRoPE support (GDN layers are left unchanged)
+"""
+
+from typing import Optional
+
+from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
+    get_transformer_block_with_experimental_attention_variant_spec,
+)
+from megatron.core.transformer.spec_utils import ModuleSpec
+from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
+from megatron.core.transformer.attention import SelfAttention
+
+
+def _patch_standard_attention_specs(
+    block_spec: TransformerBlockSubmodules,
+    attention_cls,
+) -> None:
+    """Selectively replace self_attention module on standard attention layer specs.
+
+    Copied from megatron.bridge.models.qwen_vl.qwen35_vl_provider._patch_standard_attention_specs
+
+    In a hybrid block spec, each layer spec has a different self_attention submodule:
+    - Standard attention layers have a ``SelfAttention``-like module.
+    - GDN layers have a ``GatedDeltaNet``-like module.
+
+    This function patches only the standard attention layers with *attention_cls*
+    (e.g., Qwen35VLSelfAttention for mRoPE support), leaving GDN layers unchanged.
+
+    Detection heuristic: GDN layer specs use ``GatedDeltaNet`` (or similar) as the
+    self_attention module and do NOT have a ``linear_qkv`` submodule. Standard
+    attention specs DO have ``linear_qkv``. We use this to distinguish them.
+    """
+    for layer_spec in block_spec.layer_specs:
+        attn_spec = layer_spec.submodules.self_attention
+        # Standard attention specs use SelfAttention (or a subclass) as the module
+        # and have linear_qkv in their submodules. GDN specs use GatedDeltaNet.
+        if attn_spec.module is SelfAttention or (
+            isinstance(attn_spec.module, type) and issubclass(attn_spec.module, SelfAttention)
+        ):
+            attn_spec.module = attention_cls
+
+
+def get_qwen35vl_language_model_spec(config) -> TransformerBlockSubmodules:
+    """Build hybrid GDN + Attention block spec for Qwen3.5 VL language model.
+
+    Args:
+        config: Qwen35VLTransformerConfig with:
+            - experimental_attention_variant: "gated_delta_net"
+            - linear_attention_freq: 4 (1 attention per 4 layers)
+            - num_layers: 64 (for 27B dense)
+
+    Returns:
+        TransformerBlockSubmodules with per-layer specs where:
+        - GDN layers use GatedDeltaNet (from Megatron-LM-main)
+        - Standard attention layers use Qwen35VLSelfAttention (mRoPE + output gate)
+    """
+    # Build hybrid block spec: produces TransformerBlockSubmodules with
+    # per-layer specs (GDN layers get GatedDeltaNet, attention layers get
+    # standard SelfAttention + standard MLP)
+    block_spec = get_transformer_block_with_experimental_attention_variant_spec(
+        config,
+        vp_stage=None,
+    )
+
+    # Selectively patch only the standard (full) attention layer specs
+    # with Qwen35VLSelfAttention for mRoPE support. GDN layers are left as-is.
+    from flagscale.models.megatron.qwen35_vl.attention import Qwen35VLSelfAttention
+    _patch_standard_attention_specs(block_spec, Qwen35VLSelfAttention)
+
+    return block_spec
+
+
+def get_mlp_module_spec(
+    use_te: bool = True, num_experts: Optional[int] = None,
+    moe_grouped_gemm: bool = False, add_norm: bool = True
+):
+    """Get MLP or MoE module spec for vision/language model."""
+    from megatron.core.extensions.transformer_engine import (
+        TELayerNormColumnParallelLinear,
+        TERowParallelLinear,
+        TEColumnParallelLinear,
+        TEColumnParallelGroupedLinear,
+        TERowParallelGroupedLinear,
+    )
+    from megatron.core.transformer.mlp import MLP, MLPSubmodules
+    from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
+    from megatron.core.transformer.moe.experts import TEGroupedMLP
+
+    assert use_te, "Only Transformer Engine backend is supported"
+    if num_experts is None:
+        if add_norm:
+            return ModuleSpec(
+                module=MLP,
+                submodules=MLPSubmodules(
+                    linear_fc1=TELayerNormColumnParallelLinear,
+                    linear_fc2=TERowParallelLinear,
+                ),
+            )
+        else:
+            return ModuleSpec(
+                module=MLP,
+                submodules=MLPSubmodules(
+                    linear_fc1=TEColumnParallelLinear,
+                    linear_fc2=TERowParallelLinear,
+                ),
+            )
+    else:
+        assert moe_grouped_gemm, "Only TE Group GEMM is supported."
+        return ModuleSpec(
+            module=MoELayer,
+            submodules=MoESubmodules(
+                experts=ModuleSpec(
+                    module=TEGroupedMLP,
+                    submodules=MLPSubmodules(
+                        linear_fc1=TEColumnParallelGroupedLinear,
+                        linear_fc2=TERowParallelGroupedLinear,
+                    )
+                ),
+            )
+        )
