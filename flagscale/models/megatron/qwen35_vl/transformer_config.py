@@ -27,19 +27,14 @@ from megatron.core import parallel_state
 @dataclass
 class Qwen35VLTransformerConfig(TransformerConfig):
     """
-    Transformer config for Qwen3.5 VL (Dense 27B).
+    Transformer config for Qwen3.5 VL
 
-    Default values aligned with megatron.bridge.models.qwen_vl.qwen35_vl_provider.Qwen35VLModelProvider
-
-    Key differences from Qwen3-VL:
-    - kv_channels = 256 (head_dim = 256, vs 128 in qwen3vl)
-    - rotary_percent = 0.25 (partial rotary, vs 1.0)
-    - rotary_base = 10,000,000 (vs 5,000,000)
-    - mrope_section = [11, 11, 10] (vs [24, 20, 20])
-    - layernorm_zero_centered_gamma = True (vs False)
-    - attention_output_gate = True (new feature)
-    - deepstack_visual_indexes = [] (no deepstack for dense 27B)
-    - Token IDs: 248xxx series (vs 151xxx)
+    Architecture:
+    - Hybrid GDN + Attention (experimental_attention_variant="gated_delta_net")
+    - Partial rotary (rotary_percent=0.25, rotary_dim=64)
+    - mRoPE with sections [11, 11, 10]
+    - Vision encoder shared with Qwen3-VL
+    - Token IDs: 248xxx series
     """
 
     # =========================================================================
@@ -97,7 +92,7 @@ class Qwen35VLTransformerConfig(TransformerConfig):
     language_max_sequence_length: int = 2048
     scatter_embedding_sequence_parallel: bool = False
 
-    # Vision-specific (same encoder as qwen3vl, no deepstack for dense 27B)
+    # Vision-specific (shared with Qwen3-VL)
     deepstack_visual_indexes: List[int] = field(default_factory=list)
     fp16_lm_cross_entropy: bool = False
     share_embeddings_and_output_weights: bool = False

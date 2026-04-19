@@ -17,10 +17,10 @@
 """
 Qwen3.5 VL Self Attention.
 
-Key differences from standard SelfAttention:
-- Uses apply_rotary_pos_emb_absolute (absolute position embeddings, not relative)
+Features:
+- Uses apply_rotary_pos_emb_absolute for mRoPE support
 - Supports attention_output_gate (gated attention for hybrid GDN+Attention architecture)
-- Shape of rotary_pos_emb is (seq_length, bs, 1, 2*dim) instead of (max_seqlen, 1, 1, 2*dim)
+- rotary_pos_emb shape: (seq_length, bs, 1, 2*dim) instead of (max_seqlen, 1, 1, 2*dim)
 """
 
 from einops import rearrange
@@ -228,7 +228,7 @@ class Qwen35VLSelfAttention(SelfAttention):
             core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
         nvtx_range_pop(suffix="core_attention")
 
-        # Apply output gate (for gated attention in hybrid GDN+Attention architecture)
+        # Apply output gate for hybrid GDN+Attention
         if gate is not None:
             core_attn_out = self._apply_output_gate(core_attn_out, gate)
 

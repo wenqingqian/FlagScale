@@ -17,12 +17,11 @@
 """
 Qwen3.5 VL training entry point for FlagScale.
 
-Key differences from Qwen3-VL:
-- Uses Qwen35VLTransformerConfig and Qwen35VLModel
-- Token IDs: 248xxx series (vs 151xxx)
-- hybrid GDN + Attention architecture via get_qwen35vl_language_model_spec
-- mrope_section = [11, 11, 10], rotary_base = 10M, rotary_percent = 0.25
-- kv_channels = 256 (head_dim = 256)
+Features:
+- Hybrid GDN + Attention language model
+- Qwen35VLTransformerConfig with mRoPE (sections=[11,11,10], rotary_base=10M)
+- Reuses Qwen3-VL vision encoder
+- Token IDs: 248xxx series
 """
 
 import os

@@ -17,10 +17,10 @@
 """
 Qwen3.5 VL Language Module.
 
-Key differences from Qwen3-VL:
-- Uses Qwen35VLLanguageRotaryEmbedding (rotary_percent=0.25, rotary_base=10M, mrope_section=[11,11,10])
+Key features:
+- Hybrid GDN + Attention architecture (alternating pattern via layer_specs)
 - Supports attention_output_gate for gated attention
-- Uses hybrid GDN + Attention architecture via layer_specs
+- Uses Qwen35VLLanguageRotaryEmbedding with mRoPE (rotary_percent=0.25, mrope_section=[11,11,10])
 """
 
 from typing import Dict, Literal, Optional, List

@@ -17,12 +17,9 @@
 """
 Qwen3.5 VL Model.
 
-Key differences from Qwen3-VL:
-- Uses Qwen35VLLanguageModule (hybrid GDN+Attention architecture)
-- Uses Qwen35VLTransformerConfig
-- Token IDs: 248xxx series
-- No deepstack for dense 27B (deepstack_visual_indexes=[])
-- get_rope_index uses Qwen3.5 token IDs
+Architecture:
+- Hybrid GDN + Attention language model (Qwen35VLLanguageModule)
+- Reuses Qwen3-VL vision encoder (identical architecture)
 """
 
 import logging

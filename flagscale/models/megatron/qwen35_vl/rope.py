@@ -17,10 +17,10 @@
 """
 Qwen3.5 VL mRoPE implementation.
 
-Key differences from Qwen3-VL:
-- mrope_section = [11, 11, 10] (vs [24, 20, 20])
-- rotary_percent = 0.25 (partial rotary, head_dim=256, rotary_dim=64)
-- rotary_base = 10,000,000 (vs 5,000,000)
+Features:
+- mrope_section = [11, 11, 10] (temporal, height, width)
+- Partial rotary (rotary_percent=0.25, head_dim=256, rotary_dim=64)
+- rotary_base = 10,000,000
 """
 
 from typing import List, Optional
@@ -152,8 +152,7 @@ def get_rope_index(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute mRoPE position indices for Qwen3.5 VL.
 
-    Identical algorithm to Qwen3-VL but uses Qwen3.5 token IDs.
-    Video timestamps are split the same way as Qwen3-VL.
+    Uses Qwen3.5 token IDs for vision tokens.
     """
 
     if video_grid_thw is not None:
