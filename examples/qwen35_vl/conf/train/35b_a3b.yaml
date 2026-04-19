@@ -2,9 +2,10 @@ system:
   vision_ration: 0.1
   num_workers: 1
   calculate_per_token_loss: true
-  tensor_model_parallel_size: 4
+  tensor_model_parallel_size: 2
   pipeline_model_parallel_size: 2
   context_parallel_size: 1
+  expert_model_parallel_size: 2
   use_flash_attn: True
   use_distributed_optimizer: True
   sequence_parallel: True
@@ -24,16 +25,15 @@ system:
     ckpt_format: torch
 
 model:
-  # Qwen3.5-27B architecture parameters
-  kv_channels: 256 
+  # Qwen3.5-35B-A3B (MoE) architecture parameters
+  kv_channels: 256
   qk_layernorm: True
   attention_backend: flash
   disable_bias_linear: True
-  num_layers: 64
-  hidden_size: 5120
-  ffn_hidden_size: 17408  # intermediate size for dense MLP
-  num_attention_heads: 24  # Q heads for gated attention
-  num_query_groups: 4  # KV heads (GQA)
+  num_layers: 40
+  hidden_size: 2048
+  num_attention_heads: 16
+  num_query_groups: 2
   seq_length: 2048
   max_padding_length: 2048
   enable_variable_seq_lengths: True
@@ -57,11 +57,11 @@ model:
 
   # Position embedding: Qwen3.5 uses mRoPE with partial rotary
   position_embedding_type: mrope
-  rotary_percent: 0.25  # partial rotary (rotary_dim = 256 * 0.25 = 64)
+  rotary_percent: 0.25
   rotary_base: 10000000
   rotary_seq_len_interpolation_factor: 1
   no_rope_fusion: False
-  mrope_section: [11, 11, 10]  # Qwen3.5 mRoPE sections
+  mrope_section: [11, 11, 10]
   eod_mask_loss: False
 
   # Vision model
@@ -79,14 +79,14 @@ model:
 
   seed: 42
 
-  # Gated DeltaNet (GDN) parameters (for hybrid GDN + Attention architecture)
+  # Gated DeltaNet (GDN) parameters
   experimental_attention_variant: gated_delta_net
-  linear_attention_freq: 4  # Pattern: [GDN, GDN, GDN, Attention] x 16
+  linear_attention_freq: 4
   linear_conv_kernel_dim: 4
   linear_key_head_dim: 128
   linear_value_head_dim: 128
   linear_num_key_heads: 16
-  linear_num_value_heads: 48
+  linear_num_value_heads: 32
   layernorm_zero_centered_gamma: True
   attention_output_gate: True
 
@@ -95,6 +95,19 @@ model:
   vision_hidden_size: 1152
   vision_ffn_hidden_size: 4304
   vision_num_attention_heads: 16
+
+  # MoE parameters
+  num_experts: 256
+  moe_router_topk: 8
+  moe_ffn_hidden_size: 512
+  moe_shared_expert_intermediate_size: 512
+  moe_router_dtype: fp32
+  moe_router_load_balancing_type: global_aux_loss
+  moe_router_pre_softmax: False
+  moe_grouped_gemm: True
+  moe_token_dispatcher_type: alltoall
+  moe_permute_fusion: True
+  moe_aux_loss_coeff: 1.0e-3
 
   optimizer:
     weight_decay: 0.1

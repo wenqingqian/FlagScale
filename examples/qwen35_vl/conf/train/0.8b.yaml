@@ -2,7 +2,7 @@ system:
   vision_ration: 0.1
   num_workers: 1
   calculate_per_token_loss: true
-  tensor_model_parallel_size: 4
+  tensor_model_parallel_size: 2
   pipeline_model_parallel_size: 2
   context_parallel_size: 1
   use_flash_attn: True
@@ -20,20 +20,20 @@ system:
   logging:
     log_interval: 1
   checkpoint:
-    save_interval: 10000
+    save_interval: 5
     ckpt_format: torch
 
 model:
-  # Qwen3.5-27B architecture parameters
-  kv_channels: 256 
+  # Qwen3.5-0.8B architecture parameters
+  kv_channels: 256
   qk_layernorm: True
   attention_backend: flash
   disable_bias_linear: True
-  num_layers: 64
-  hidden_size: 5120
-  ffn_hidden_size: 17408  # intermediate size for dense MLP
-  num_attention_heads: 24  # Q heads for gated attention
-  num_query_groups: 4  # KV heads (GQA)
+  num_layers: 24
+  hidden_size: 1024
+  ffn_hidden_size: 3584
+  num_attention_heads: 8
+  num_query_groups: 2
   seq_length: 2048
   max_padding_length: 2048
   enable_variable_seq_lengths: True
@@ -53,15 +53,15 @@ model:
   apply_layernorm_1p: False
   group_query_attention: True
   no_masked_softmax_fusion: True
-  untie_embeddings_and_output_weights: True
+  untie_embeddings_and_output_weights: False
 
   # Position embedding: Qwen3.5 uses mRoPE with partial rotary
   position_embedding_type: mrope
-  rotary_percent: 0.25  # partial rotary (rotary_dim = 256 * 0.25 = 64)
+  rotary_percent: 0.25
   rotary_base: 10000000
   rotary_seq_len_interpolation_factor: 1
   no_rope_fusion: False
-  mrope_section: [11, 11, 10]  # Qwen3.5 mRoPE sections
+  mrope_section: [11, 11, 10]
   eod_mask_loss: False
 
   # Vision model
@@ -79,22 +79,25 @@ model:
 
   seed: 42
 
-  # Gated DeltaNet (GDN) parameters (for hybrid GDN + Attention architecture)
+  # Gated DeltaNet (GDN) parameters
   experimental_attention_variant: gated_delta_net
-  linear_attention_freq: 4  # Pattern: [GDN, GDN, GDN, Attention] x 16
+  linear_attention_freq: 4
   linear_conv_kernel_dim: 4
   linear_key_head_dim: 128
   linear_value_head_dim: 128
   linear_num_key_heads: 16
-  linear_num_value_heads: 48
+  linear_num_value_heads: 16
   layernorm_zero_centered_gamma: True
   attention_output_gate: True
 
   # Vision encoder parameters
-  vision_num_layers: 27
-  vision_hidden_size: 1152
-  vision_ffn_hidden_size: 4304
-  vision_num_attention_heads: 16
+  vision_num_layers: 12
+  vision_hidden_size: 768
+  vision_ffn_hidden_size: 3072
+  vision_num_attention_heads: 12
+
+  # mtp
+  mtp_num_layers: 1
 
   optimizer:
     weight_decay: 0.1
