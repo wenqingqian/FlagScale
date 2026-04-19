@@ -90,6 +90,7 @@ from flagscale.models.megatron.qwen35_vl.transformer_config import (
 )
 from flagscale.models.megatron.qwen35_vl.layer_specs import (
     get_qwen35vl_language_model_spec,
+    get_qwen35vl_mtp_block_spec
 )
 
 from megatron.plugin.platform import get_platform
@@ -139,6 +140,9 @@ def model_provider(
     if args.enable_variable_seq_lengths:
         config.variable_seq_lengths = True
 
+    # MTP (Multi-Token Prediction) spec
+    mtp_block_spec = get_qwen35vl_mtp_block_spec(args, config)
+
     model = Qwen35VLModel(
         language_transformer_config=config,
         language_transformer_layer_spec=language_layer_spec,
@@ -163,6 +167,7 @@ def model_provider(
         fp16_lm_cross_entropy=args.fp16_lm_cross_entropy,
         parallel_output=True,
         language_share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
+        mtp_block_spec=mtp_block_spec,
     )
 
     model.freeze(

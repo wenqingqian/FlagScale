@@ -89,6 +89,7 @@ class Qwen35VLModel(MegatronModule):
         fp16_lm_cross_entropy: bool = False,
         language_share_embeddings_and_output_weights: bool = False,
         vp_stage: int = None,
+        mtp_block_spec=None,
     ) -> None:
         super().__init__(config=language_transformer_config)
 
@@ -135,7 +136,7 @@ class Qwen35VLModel(MegatronModule):
             fp16_lm_cross_entropy=fp16_lm_cross_entropy,
             share_embeddings_and_output_weights=language_share_embeddings_and_output_weights,
             rope_scaling=False,
-            mtp_block_spec=None,
+            mtp_block_spec=mtp_block_spec,
             vp_stage=vp_stage,
         )
 
@@ -264,7 +265,7 @@ class Qwen35VLModel(MegatronModule):
             deepstack_feature_lists = None
 
         output = self.language_model(
-            input_ids=None,
+            input_ids=input_ids,
             position_ids=position_ids,
             attention_mask=attention_mask,
             decoder_input=combined_embeddings,

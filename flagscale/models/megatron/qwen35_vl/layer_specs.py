@@ -65,7 +65,7 @@ def _patch_standard_attention_specs(
             attn_spec.module = attention_cls
 
 
-def get_qwen35vl_language_model_spec(config) -> TransformerBlockSubmodules:
+def get_qwen35vl_language_model_spec(config, patch=True) -> TransformerBlockSubmodules:
     """Build hybrid GDN + Attention block spec for Qwen3.5 VL language model.
 
     Args:
@@ -87,10 +87,12 @@ def get_qwen35vl_language_model_spec(config) -> TransformerBlockSubmodules:
         vp_stage=None,
     )
 
-    # Selectively patch only the standard (full) attention layer specs
-    # with Qwen35VLSelfAttention for mRoPE support. GDN layers are left as-is.
-    from flagscale.models.megatron.qwen35_vl.attention import Qwen35VLSelfAttention
-    _patch_standard_attention_specs(block_spec, Qwen35VLSelfAttention)
+    # This flag only for mtp layer (patch = false).
+    if patch:
+        # Selectively patch only the standard (full) attention layer specs
+        # with Qwen35VLSelfAttention for mRoPE support. GDN layers are left as-is.
+        from flagscale.models.megatron.qwen35_vl.attention import Qwen35VLSelfAttention
+        _patch_standard_attention_specs(block_spec, Qwen35VLSelfAttention)
 
     return block_spec
 
@@ -143,3 +145,18 @@ def get_mlp_module_spec(
                 ),
             )
         )
+
+def get_qwen35vl_mtp_block_spec(args, config):
+    mtp_block_spec = None
+    if getattr(args, 'mtp_num_layers', None) is not None:
+        from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+        # MTP uses standard SelfAttention (not Qwen35VLSelfAttention or GDN).
+        # Generate an unpatched block spec so MTP gets vanilla SelfAttention.
+        # NOTE(wqq) Maybe we can make this code clear but it match Megatron-Bridge behavior.
+        unpatched_spec = get_qwen35vl_language_model_spec(config, patch=False)
+        mtp_block_spec = get_gpt_mtp_block_spec(
+            config,
+            unpatched_spec,
+            use_transformer_engine=args.use_te,
+        )
+    return mtp_block_spec

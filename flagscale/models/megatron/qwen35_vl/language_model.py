@@ -38,6 +38,10 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import deprecate_inference_params
 from megatron.core.models.gpt.gpt_model import GPTModel
+from megatron.core.transformer.multi_token_prediction import (
+    MultiTokenPredictionBlock,
+    mtp_on_this_rank
+)
 from megatron.core.process_groups_config import ProcessGroupCollection
 
 from .language_transformer_block import LanguageTransformerBlock
@@ -124,9 +128,11 @@ class Qwen35VLLanguageModule(GPTModel):
             self.rotary_base = rotary_base
         self.rotary_scaling = rope_scaling
         self.mtp_block_spec = mtp_block_spec
-        self.mtp_process = mtp_block_spec is not None
+        self.mtp_process = mtp_block_spec is not None and mtp_on_this_rank(
+            self.config, ignore_virtual=False, vp_stage=vp_stage
+        )
 
-        if self.pre_process:
+        if self.pre_process or self.mtp_process:
             self.embedding = QwenVLLanguageModelEmbedding(
                 config=self.config,
                 vocab_size=self.vocab_size,
@@ -163,9 +169,11 @@ class Qwen35VLLanguageModule(GPTModel):
         )
 
         if self.mtp_process:
-            from megatron.core.models.gpt.mtp import MultiTokenPredictionBlock
             self.mtp = MultiTokenPredictionBlock(
-                config=self.config, spec=self.mtp_block_spec, vp_stage=vp_stage
+                config=self.config,
+                spec=self.mtp_block_spec,
+                vp_stage=vp_stage,
+                pg_collection=self.pg_collection,
             )
 
         # Output
@@ -192,7 +200,7 @@ class Qwen35VLLanguageModule(GPTModel):
                 tp_group=self.pg_collection.tp,
             )
 
-        if self.pre_process or self.post_process:
+        if self.pre_process or self.post_process or self.mtp_process:
             self.setup_embeddings_and_output_layer()
 
         if has_config_logger_enabled(self.config):
@@ -225,7 +233,7 @@ class Qwen35VLLanguageModule(GPTModel):
         # Forward logic adapted from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.text_model.Qwen3VLGPTModel
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
-        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
+        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset, padding_mask = (
             self._preprocess(
                 input_ids=input_ids,
                 position_ids=position_ids,
