@@ -110,6 +110,9 @@ def model_provider(
 
     # Build transformer config with Qwen35VL config class
     config = core_transformer_config_from_args(args, Qwen35VLTransformerConfig)
+    # Qwen3.5 uses zero-centered gamma for RMSNorm; override if needed
+    # (core_transformer_config_from_args may be affected by apply_layernorm_1p)
+    config.layernorm_zero_centered_gamma = getattr(args, 'layernorm_zero_centered_gamma', True)
     use_te = args.transformer_impl == "transformer_engine"
     if not use_te:
         raise NotImplementedError("Qwen3.5 VL model is only implemented with TransformerEngine!")
@@ -564,6 +567,29 @@ def add_multimodal_extra_args(parser):
         default=False,
     )
     group.add_argument("--use-te", action="store_true", default=False)
+
+    # GDN parameters (auto-mapped to Qwen35VLTransformerConfig)
+    # Fixed across all models (with defaults)
+    group.add_argument("--experimental-attention-variant", type=str, default="gated_delta_net")
+    group.add_argument("--linear-attention-freq", type=int, default=4)
+    group.add_argument("--linear-conv-kernel-dim", type=int, default=4)
+    group.add_argument("--linear-key-head-dim", type=int, default=128)
+    group.add_argument("--linear-value-head-dim", type=int, default=128)
+    group.add_argument("--linear-num-key-heads", type=int, default=16)
+    group.add_argument("--attention-output-gate", action="store_true", default=True)
+    group.add_argument("--layernorm-zero-centered-gamma", action="store_true", default=True)
+    # Varies across models (no default, must be set in yaml)
+    group.add_argument("--linear-num-value-heads", type=int, default=None)
+
+    # Vision encoder parameters (varies across models, no default)
+    group.add_argument("--vision-num-layers", type=int, default=None)
+    group.add_argument("--vision-hidden-size", type=int, default=None)
+    group.add_argument("--vision-ffn-hidden-size", type=int, default=None)
+    group.add_argument("--vision-num-attention-heads", type=int, default=None)
+
+    # MoE: most params registered in FlagScale _add_moe_args, only add missing ones
+    group.add_argument("--moe-shared-expert-gate", action="store_true", default=False)
+
     return parser
 
 

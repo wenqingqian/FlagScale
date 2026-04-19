@@ -60,6 +60,10 @@ class Qwen35VLTransformerConfig(TransformerConfig):
     add_bias_linear: bool = False
     add_qkv_bias: bool = False
     qk_layernorm: bool = True
+    ### TODO: Some params specific to FlagScale, deleted util new megatron-plugin
+    qk_layernorm_hidden_dim: bool = False
+    peft_type: str = None
+    ###
     kv_channels: int | None = 256
     num_query_groups: int = 4
     hidden_dropout: float = 0.0
@@ -102,13 +106,13 @@ def get_vision_model_config(args, config):
     """Build vision encoder config from language transformer config."""
     assert parallel_state.get_virtual_pipeline_model_parallel_world_size() is None, "NotSupported"
 
-    # Qwen3.5 VL uses same vision encoder as Qwen3-VL (depth=27, hidden=1152)
-    config.num_layers = 27
-    config.hidden_size = 1152
-    config.ffn_hidden_size = 4304
+    # Qwen3.5 VL vision encoder params from args (varies by model size)
+    config.num_layers = args.vision_num_layers
+    config.hidden_size = args.vision_hidden_size
+    config.ffn_hidden_size = args.vision_ffn_hidden_size
     config.deepstack_visual_indexes = []
 
-    config.num_attention_heads = 16
+    config.num_attention_heads = args.vision_num_attention_heads
     config.add_bias_linear = True
     config.add_qkv_bias = True
     config.hidden_dropout = 0.0
