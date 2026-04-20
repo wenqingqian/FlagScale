@@ -15,18 +15,15 @@
 # limitations under the License.
 
 """
-Qwen3.5 VL mRoPE implementation.
-
-Features:
-- mrope_section = [11, 11, 10] (temporal, height, width)
-- Partial rotary (rotary_percent=0.25, head_dim=256, rotary_dim=64)
-- rotary_base = 10,000,000
+Qwen3.5 VL mRoPE - reuses Qwen3 VL RotaryEmbedding with different defaults:
+- mrope_section = [11, 11, 10] (vs [24, 20, 20])
+- rotary_percent = 0.25 (head_dim=256, rotary_dim=64)
+- rotary_base = 10,000,000 (vs 5,000,000)
 """
 
 from typing import List, Optional
 
 import torch
-import torch.nn as nn
 from megatron.core.models.common.embeddings.rope_utils import (
     _apply_rotary_pos_emb_bshd,
     get_pos_emb_on_this_cp_rank,
@@ -34,18 +31,11 @@ from megatron.core.models.common.embeddings.rope_utils import (
 from megatron.core.packed_seq_params import PackedSeqParams
 from torch import Tensor
 
+from flagscale.models.megatron.qwen3_vl.language_model import Qwen3VLLanguageRotaryEmbedding
 
-class Qwen35VLLanguageRotaryEmbedding(nn.Module):
-    """Multimodal Rotary Embedding for Qwen3.5 VL language model.
 
-    Args:
-        kv_channels: Number of key/value channels (head_dim).
-        rotary_percent: Percent of rotary dimension to use.
-        rotary_interleaved: Not supported for Qwen3.5 VL.
-        seq_len_interpolation_factor: RoPE interpolation factor.
-        rotary_base: Base for rotary position embeddings.
-        cp_group: Context parallel process group.
-    """
+class Qwen35VLLanguageRotaryEmbedding(Qwen3VLLanguageRotaryEmbedding):
+    """Qwen3.5 VL mRoPE - inherits Qwen3 VL, overrides defaults and CP slicing for THD."""
 
     def __init__(
         self,
@@ -56,84 +46,33 @@ class Qwen35VLLanguageRotaryEmbedding(nn.Module):
         rotary_base: int = 10000000,
         cp_group: torch.distributed.ProcessGroup = None,
     ) -> None:
-        super().__init__()
-
-        dim = kv_channels
-        if rotary_percent < 1.0:
-            dim = int(dim * rotary_percent)
-        self.rotary_interleaved = rotary_interleaved
-        assert not self.rotary_interleaved, "Qwen3.5 VL only supports non-interleaved rotary"
-
-        self.seq_len_interpolation_factor = seq_len_interpolation_factor
-        self.inv_freq = 1.0 / (
-            rotary_base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=torch.cuda.current_device()) / dim)
-        )
-        self.is_thd_format = False
-        self.mrope_section = [11, 11, 10]  # Default for Qwen3.5 VL
         assert cp_group is not None, "cp_group is required"
-        self.cp_group = cp_group
-
-    def apply_interleaved_mrope(self, freqs, mrope_section):
-        """Apply interleaved MRoPE to 3D rotary embeddings.
-
-        Reorganizes frequency layout from chunked [TTT...HHH...WWW] to
-        interleaved [THTHWHTHW...TT], preserving frequency continuity.
-
-        Args:
-            freqs: Shape (3, bs, seq_len, head_dim // 2)
-            mrope_section: (3,) - section sizes for [temporal, height, width]
-
-        Returns:
-            x_t: (bs, seq_len, head_dim // 2)
-        """
-        freqs_t = freqs[0]  # Overwrite the first dimension T
-        for dim, offset in enumerate((1, 2), start=1):  # H, W
-            length = mrope_section[dim] * 3
-            idx = slice(offset, length, 3)
-            freqs_t[..., idx] = freqs[dim, ..., idx]
-        return freqs_t
+        super().__init__(
+            kv_channels, rotary_percent, rotary_interleaved,
+            seq_len_interpolation_factor, rotary_base, cp_group,
+        )
+        self.mrope_section = [11, 11, 10]
+        # keep this for packed sequence
+        self.is_thd_format = False
 
     def forward(
         self,
         position_ids: torch.Tensor,
-        mrope_section: List[int] | None,
+        mrope_section: List[int] | None = None,
         packed_seq_params: Optional[PackedSeqParams] = None,
         **kwargs,
     ) -> Tensor:
-        """Forward pass of multimodal RoPE embedding.
-
-        Args:
-            position_ids: Shape [3, batchsize, seqlens]
-            mrope_section: [temporal, height, width] section sizes
-            packed_seq_params: Packed sequence params for THD format
-
-        Returns:
-            Tensor: Embeddings of shape (seq_length, bs, 1, 2 * dim)
-        """
+        assert packed_seq_params is None
         if position_ids.ndim == 2:
             position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
 
-        seq = position_ids.to(device=self.inv_freq.device, dtype=torch.float32)
+        # Temporarily disable cp_group so parent skips CP slicing
+        cp_group_backup = self.cp_group
+        self.cp_group = None
+        emb = super().forward(position_ids, mrope_section or self.mrope_section)
+        self.cp_group = cp_group_backup
 
-        if self.seq_len_interpolation_factor is not None:
-            seq *= 1 / self.seq_len_interpolation_factor
-
-        # shape (3, bs, dim, 1)
-        inv_freq_expanded = self.inv_freq[None, None, :, None].expand(3, seq.shape[1], -1, 1)
-        # shape (3, bs, 1, seq_length)
-        seq_expanded = seq[:, :, None, :].float()
-        # shape (3, bs, seq_length, dim)
-        freqs = (inv_freq_expanded @ seq_expanded).transpose(2, 3)
-
-        if mrope_section is not None:
-            freqs = self.apply_interleaved_mrope(freqs, mrope_section)
-        else:
-            freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
-
-        emb = torch.cat((freqs, freqs), dim=-1)
-
-        # shape (seq_length, bs, 1, 2 * dim)
-        emb = emb[..., None, :].transpose(0, 1).contiguous()
+        # CP slicing with THD check
         if self.cp_group.size() > 1 and not self.is_thd_format:
             emb = get_pos_emb_on_this_cp_rank(emb, 0, self.cp_group)
         return emb
@@ -152,7 +91,7 @@ def get_rope_index(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute mRoPE position indices for Qwen3.5 VL.
 
-    Uses Qwen3.5 token IDs for vision tokens.
+    Copied from Qwen3 VL.
     """
 
     if video_grid_thw is not None:
