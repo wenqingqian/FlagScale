@@ -96,6 +96,9 @@ model:
   vision_ffn_hidden_size: 4304
   vision_num_attention_heads: 16
 
+  # mtp
+  mtp_num_layers: 1
+
   optimizer:
     weight_decay: 0.1
     adam_beta1: 0.9
@@ -108,7 +111,7 @@ model:
 
 data:
   no_use_system_prompt: True
-  vocab_size: 248044
+  vocab_size: 248320
   data_path: /workspace/data/qwen/qwen_wds/wds-1
   vision_root: /
   dataloader_type: external
@@ -117,10 +120,4 @@ data:
     tokenizer_type: Qwen2VLTokenizer
     tokenizer_path: /workspace/data/qwen/qwen2vl_tokenizer
     extra_vocab_size: 0
-    # NOTE(wqq) If use Qwen2VLTokenizer
-    #   FlagScale will ignore this flag 
-    #   and set padded_vocab_size to vocab_size
-    # TODO(wqq) It made mcore weight different with hf weight
-    #   1. Open padding
-    #   2. Set vocab_size to 248320 which match the hf
     make_vocab_size_divisible_by: 64
