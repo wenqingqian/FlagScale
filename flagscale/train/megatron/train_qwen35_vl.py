@@ -102,7 +102,7 @@ IGNORE_IDX = -100
 
 
 def model_provider(
-    pre_process=True, post_process=True, add_encoder=True, add_decoder=True
+    pre_process=True, post_process=True, add_encoder=True, add_decoder=True, **kwargs
 ) -> Union[Qwen35VLModel]:
     """Provide a Qwen3.5 VL model instance."""
     args = get_args()
@@ -570,16 +570,16 @@ def add_multimodal_extra_args(parser):
 
     # GDN parameters (auto-mapped to Qwen35VLTransformerConfig)
     # Fixed across all models (with defaults)
-    group.add_argument("--experimental-attention-variant", type=str, default="gated_delta_net")
-    group.add_argument("--linear-attention-freq", type=int, default=4)
-    group.add_argument("--linear-conv-kernel-dim", type=int, default=4)
-    group.add_argument("--linear-key-head-dim", type=int, default=128)
-    group.add_argument("--linear-value-head-dim", type=int, default=128)
-    group.add_argument("--linear-num-key-heads", type=int, default=16)
-    group.add_argument("--attention-output-gate", action="store_true", default=True)
+    # group.add_argument("--experimental-attention-variant", type=str, default="gated_delta_net")
+    # group.add_argument("--linear-attention-freq", type=int, default=4)
+    # group.add_argument("--linear-conv-kernel-dim", type=int, default=4)
+    # group.add_argument("--linear-key-head-dim", type=int, default=128)
+    # group.add_argument("--linear-value-head-dim", type=int, default=128)
+    # group.add_argument("--linear-num-key-heads", type=int, default=16)
+    # group.add_argument("--attention-output-gate", action="store_true", default=True)
     group.add_argument("--layernorm-zero-centered-gamma", action="store_true", default=True)
-    # Varies across models (no default, must be set in yaml)
-    group.add_argument("--linear-num-value-heads", type=int, default=None)
+    # # Varies across models (no default, must be set in yaml)
+    # group.add_argument("--linear-num-value-heads", type=int, default=None)
 
     # Vision encoder parameters (varies across models, no default)
     group.add_argument("--vision-num-layers", type=int, default=None)
@@ -588,7 +588,7 @@ def add_multimodal_extra_args(parser):
     group.add_argument("--vision-num-attention-heads", type=int, default=None)
 
     # MoE: most params registered in FlagScale _add_moe_args, only add missing ones
-    group.add_argument("--moe-shared-expert-gate", action="store_true", default=False)
+    # group.add_argument("--moe-shared-expert-gate", action="store_true", default=False)
 
     return parser
 
