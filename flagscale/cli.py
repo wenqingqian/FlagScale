@@ -331,6 +331,7 @@ def eval_robo(
 class Platform(str, Enum):
     cuda = "cuda"
     ascend = "ascend"
+    metax = "metax"
     default = "default"
 
 

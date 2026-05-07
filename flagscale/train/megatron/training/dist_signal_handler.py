@@ -13,6 +13,7 @@ SIGNAL_MAP = {
 from megatron.plugin.platform import get_platform
 cur_platform = get_platform()
 
+
 def get_world_size():
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         world_size = torch.distributed.get_world_size()
