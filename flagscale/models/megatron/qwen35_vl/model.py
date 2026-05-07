@@ -286,11 +286,6 @@ class Qwen35VLModel(MegatronModule):
         attention_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute mRoPE position indices for Qwen3.5 VL.
-
-        Uses Qwen3.5 token IDs from config:
-        - image_token_id: 248056
-        - video_token_id: 248057
-        - vision_start_token_id: 248053
         """
         return get_rope_index(
             spatial_merge_size=self.config.spatial_merge_size,

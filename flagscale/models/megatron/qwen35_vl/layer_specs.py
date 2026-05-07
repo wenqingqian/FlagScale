@@ -12,20 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Layer specs for Qwen3.5 VL.
-
-This module provides the hybrid GDN + Attention layer specifications for Qwen3.5 VL.
-The architecture alternates between Gated DeltaNet (GDN) and standard Gated Attention
-layers in a repeating pattern (e.g., [GDN, GDN, GDN, Attention] × 16 for 64 layers).
-
-Key design:
-- Uses get_transformer_block_with_experimental_attention_variant_spec from Megatron-LM-main
-  to build per-layer specs with mixed attention types
-- _patch_standard_attention_specs selectively replaces only the standard attention layers
-  with Qwen35VLSelfAttention for mRoPE support (GDN layers are left unchanged)
-"""
-
 from typing import Optional
 
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (

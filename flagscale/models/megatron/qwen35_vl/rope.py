@@ -15,10 +15,7 @@
 # limitations under the License.
 
 """
-Qwen3.5 VL mRoPE - reuses Qwen3 VL RotaryEmbedding with different defaults:
-- mrope_section = [11, 11, 10] (vs [24, 20, 20])
-- rotary_percent = 0.25 (head_dim=256, rotary_dim=64)
-- rotary_base = 10,000,000 (vs 5,000,000)
+Qwen3.5 VL mRoPE - reuses Qwen3 VL RotaryEmbedding with some different defaults:
 """
 
 from typing import List, Optional
@@ -240,9 +237,6 @@ def apply_rotary_pos_emb_absolute(
     cu_seqlens: Optional[Tensor] = None,
 ):
     """Apply absolute RoPE for mRoPE.
-
-    In Qwen3.5 VL, the shape of freqs is (seq_length, bs, 1, 2*dim)
-    instead of (max_seqlen, 1, 1, 2*dim).
     """
     assert not config.apply_rope_fusion
     orig_t_dtype = t.dtype

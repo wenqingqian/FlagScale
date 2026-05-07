@@ -14,15 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Qwen3.5 VL Self Attention.
-
-Features:
-- Uses apply_rotary_pos_emb_absolute for mRoPE support
-- Supports attention_output_gate (gated attention for hybrid GDN+Attention architecture)
-- rotary_pos_emb shape: (seq_length, bs, 1, 2*dim) instead of (max_seqlen, 1, 1, 2*dim)
-"""
-
 from einops import rearrange
 from megatron.core.transformer.attention import (
     HAVE_FA3,

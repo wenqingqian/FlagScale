@@ -28,13 +28,6 @@ from megatron.core import parallel_state
 class Qwen35VLTransformerConfig(TransformerConfig):
     """
     Transformer config for Qwen3.5 VL
-
-    Architecture:
-    - Hybrid GDN + Attention (experimental_attention_variant="gated_delta_net")
-    - Partial rotary (rotary_percent=0.25, rotary_dim=64)
-    - mRoPE with sections [11, 11, 10]
-    - Vision encoder shared with Qwen3-VL
-    - Token IDs: 248xxx series
     """
 
     # =========================================================================
@@ -60,10 +53,8 @@ class Qwen35VLTransformerConfig(TransformerConfig):
     add_bias_linear: bool = False
     add_qkv_bias: bool = False
     qk_layernorm: bool = True
-    ### TODO: Some params specific to FlagScale, deleted util new megatron-plugin
     qk_layernorm_hidden_dim: bool = False
     peft_type: str = None
-    ###
     kv_channels: int | None = 256
     num_query_groups: int = 4
     hidden_dropout: float = 0.0

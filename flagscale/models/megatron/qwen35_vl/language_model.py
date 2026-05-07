@@ -14,15 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Qwen3.5 VL Language Module.
-
-Key features:
-- Hybrid GDN + Attention architecture (alternating pattern via layer_specs)
-- Supports attention_output_gate for gated attention
-- Uses Qwen35VLLanguageRotaryEmbedding with mRoPE (rotary_percent=0.25, mrope_section=[11,11,10])
-"""
-
 from typing import Dict, Literal, Optional, List
 
 import torch
