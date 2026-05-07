@@ -14,16 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Qwen3.5 VL training entry point for FlagScale.
-
-Features:
-- Hybrid GDN + Attention language model
-- Qwen35VLTransformerConfig with mRoPE (sections=[11,11,10], rotary_base=10M)
-- Reuses Qwen3-VL vision encoder
-- Token IDs: 248xxx series
-"""
-
 import os
 import sys
 import logging
