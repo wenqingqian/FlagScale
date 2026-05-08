@@ -22,8 +22,6 @@ from megatron.core.transformer.attention import (
     SelfAttention,
     deprecate_inference_params,
     is_fa_min_version,
-    nvtx_range_pop,
-    nvtx_range_push,
 )
 from torch import Tensor
 
@@ -77,7 +75,6 @@ class Qwen35VLSelfAttention(SelfAttention):
             rotary_pos_emb = (rotary_pos_emb,) * 2
 
         # Get query, key, value tensors
-        nvtx_range_push(suffix="qkv")
         gate = None
         if self.config.attention_output_gate:
             query, key, value, gate = self.get_query_key_value_tensors(
@@ -85,12 +82,9 @@ class Qwen35VLSelfAttention(SelfAttention):
             )
         else:
             query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
-        nvtx_range_pop(suffix="qkv")
-
         # Adjust key, value, and rotary_pos_emb for inference
         in_decode_mode = inference_context is not None and inference_context.is_decode_only() and not self.training
 
-        nvtx_range_push(suffix="adjust_key_value")
         if in_decode_mode and self.config.flash_decode:
             assert self.layer_number in inference_context.key_value_memory_dict
             assert inference_context.sequence_len_offset is not None
@@ -131,10 +125,8 @@ class Qwen35VLSelfAttention(SelfAttention):
             query = query.squeeze(1)
             key = key.squeeze(1)
             value = value.squeeze(1)
-        nvtx_range_pop(suffix="adjust_key_value")
-
         # Apply absolute rotary positional embedding (mRoPE)
-        nvtx_range_push(suffix="rotary_pos_emb")
+
         if rotary_pos_emb is not None and not self.config.flash_decode:
             q_pos_emb, k_pos_emb = rotary_pos_emb
 
@@ -173,10 +165,8 @@ class Qwen35VLSelfAttention(SelfAttention):
                     config=self.config,
                     cu_seqlens=cu_seqlens_kv,
                 )
-        nvtx_range_pop(suffix="rotary_pos_emb")
 
         # Core attention computation
-        nvtx_range_push(suffix="core_attention")
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
@@ -217,15 +207,11 @@ class Qwen35VLSelfAttention(SelfAttention):
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == "thd":
             core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
-        nvtx_range_pop(suffix="core_attention")
 
         # Apply output gate for hybrid GDN+Attention
         if gate is not None:
             core_attn_out = self._apply_output_gate(core_attn_out, gate)
 
         # Output projection
-        nvtx_range_push(suffix="linear_proj")
         output, bias = self.linear_proj(core_attn_out)
-        nvtx_range_pop(suffix="linear_proj")
-
         return output, bias
