@@ -36,13 +36,13 @@ from megatron.core.transformer.multi_token_prediction import (
 from megatron.core.process_groups_config import ProcessGroupCollection
 
 from .language_transformer_block import LanguageTransformerBlock
-from .rope import Qwen35VLLanguageRotaryEmbedding
+from .rope import Qwen35LanguageRotaryEmbedding
 
 from flagscale.models.megatron.qwen2_5_vl.language_module import QwenVLLanguageModelEmbedding
 
 
-class Qwen35VLLanguageModule(GPTModel):
-    """Qwen3.5 VL Language Module.
+class Qwen35LanguageModule(GPTModel):
+    """Qwen3.5 Language Module.
 
     Args:
         config: Transformer config
@@ -133,7 +133,7 @@ class Qwen35VLLanguageModule(GPTModel):
 
         if self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
             cp_group = parallel_state.get_context_parallel_group(check_initialized=False)
-            self.rotary_pos_emb = Qwen35VLLanguageRotaryEmbedding(
+            self.rotary_pos_emb = Qwen35LanguageRotaryEmbedding(
                 kv_channels=self.config.kv_channels,
                 rotary_percent=rotary_percent,
                 rotary_interleaved=self.config.rotary_interleaved,

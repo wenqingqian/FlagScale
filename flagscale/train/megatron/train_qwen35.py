@@ -72,15 +72,15 @@ from megatron.training.global_vars import get_tokenizer
 
 from flagscale.models.megatron.qwen2_5_vl.tensor_parallel import broadcast_data
 
-from flagscale.models.megatron.qwen35_vl.model import Qwen35VLModel
-from flagscale.models.megatron.qwen35_vl.transformer_config import (
-    Qwen35VLTransformerConfig,
+from flagscale.models.megatron.qwen35.model import Qwen35Model
+from flagscale.models.megatron.qwen35.transformer_config import (
+    Qwen35TransformerConfig,
     get_vision_model_config,
     get_vision_projection_config,
 )
-from flagscale.models.megatron.qwen35_vl.layer_specs import (
-    get_qwen35vl_language_model_spec,
-    get_qwen35vl_mtp_block_spec
+from flagscale.models.megatron.qwen35.layer_specs import (
+    get_qwen35_language_model_spec,
+    get_qwen35_mtp_block_spec
 )
 
 from megatron.plugin.platform import get_platform
@@ -93,19 +93,19 @@ IGNORE_IDX = -100
 
 def model_provider(
     pre_process=True, post_process=True, add_encoder=True, add_decoder=True, **kwargs
-) -> Union[Qwen35VLModel]:
-    """Provide a Qwen3.5 VL model instance."""
+) -> Union[Qwen35Model]:
+    """Provide a Qwen3.5 model instance."""
     args = get_args()
-    print_rank_0("start building qwen3.5-vl model ...")
+    print_rank_0("start building qwen3.5 model ...")
 
-    # Build transformer config with Qwen35VL config class
-    config = core_transformer_config_from_args(args, Qwen35VLTransformerConfig)
+    # Build transformer config with Qwen35 config class
+    config = core_transformer_config_from_args(args, Qwen35TransformerConfig)
     # Qwen3.5 uses zero-centered gamma for RMSNorm; override if needed
     # (core_transformer_config_from_args may be affected by apply_layernorm_1p)
     config.layernorm_zero_centered_gamma = getattr(args, 'layernorm_zero_centered_gamma', True)
     use_te = args.transformer_impl == "transformer_engine"
     if not use_te:
-        raise NotImplementedError("Qwen3.5 VL model is only implemented with TransformerEngine!")
+        raise NotImplementedError("Qwen3.5 model is only implemented with TransformerEngine!")
 
     if args.rotary_seq_len_interpolation_factor is not None or args.rotary_seq_len_interpolation_factor != 1:
         print_rank_0('Multimodal RoPE currently does not support RoPE interpolation, set to None...')
@@ -119,24 +119,24 @@ def model_provider(
         deepcopy(config), vision_config.hidden_size, args.spatial_merge_size
     )
 
-    print_rank_0("building Qwen3.5-VL model in TE...")
+    print_rank_0("building Qwen3.5 model in TE...")
 
     # Language model spec: hybrid GDN + Attention
-    language_layer_spec = get_qwen35vl_language_model_spec(config)
+    language_layer_spec = get_qwen35_language_model_spec(config)
 
     # Vision model spec (identical to Qwen3-VL)
     from flagscale.models.megatron.qwen3_vl.layer_specs import get_qwen3vl_vision_model_spec
     vision_model_spec = get_qwen3vl_vision_model_spec()
-    from flagscale.models.megatron.qwen35_vl.layer_specs import get_mlp_module_spec
+    from flagscale.models.megatron.qwen35.layer_specs import get_mlp_module_spec
     vision_projector_spec = get_mlp_module_spec(add_norm=False).submodules
 
     if args.enable_variable_seq_lengths:
         config.variable_seq_lengths = True
 
     # MTP (Multi-Token Prediction) spec
-    mtp_block_spec = get_qwen35vl_mtp_block_spec(args, config)
+    mtp_block_spec = get_qwen35_mtp_block_spec(args, config)
 
-    model = Qwen35VLModel(
+    model = Qwen35Model(
         language_transformer_config=config,
         language_transformer_layer_spec=language_layer_spec,
         language_vocab_size=args.padded_vocab_size,
@@ -180,7 +180,7 @@ def get_ltor_masks_and_position_ids(
     pad_token,
     second_per_grid_ts,
     ignore_index=None,
-    model: Qwen35VLModel = None,
+    model: Qwen35Model = None,
 ):
     """Build masks and position ids for left-to-right model."""
     # Position ids [3 X bs X seqlen]
@@ -204,7 +204,7 @@ def get_ltor_masks_and_position_ids(
 
 
 def get_batch(
-    data_iterator, model: Qwen35VLModel = None
+    data_iterator, model: Qwen35Model = None
 ) -> Tuple:
     """Generate a batch."""
     imgs = None
@@ -286,7 +286,7 @@ SPIKY_LOSS_FACTOR = 10
 def loss_func(
     loss_mask: torch.Tensor,
     output_tensor: torch.Tensor,
-    model: Optional[Qwen35VLModel] = None,
+    model: Optional[Qwen35Model] = None,
 ):
     """Loss function."""
     args = get_args()
@@ -334,7 +334,7 @@ def loss_func(
     return (loss, num_tokens, {'lm loss': reporting_loss})
 
 
-def forward_step(data_iterator, model: Qwen35VLModel):
+def forward_step(data_iterator, model: Qwen35Model):
     """Forward training step."""
     args = get_args()
     timers = get_timers()
@@ -526,7 +526,7 @@ def cyclic_iter(iter):
 
 
 def add_multimodal_extra_args(parser):
-    """Extra arguments for Qwen3.5 VL training."""
+    """Extra arguments for Qwen3.5 training."""
     group = parser.add_argument_group(title="multimodal arguments")
     group.add_argument("--disable-vision-class-token", action="store_true", default=False)
     group.add_argument("--dataloader-save", type=str, default=None)
@@ -558,7 +558,7 @@ def add_multimodal_extra_args(parser):
     )
     group.add_argument("--use-te", action="store_true", default=False)
 
-    # GDN parameters (auto-mapped to Qwen35VLTransformerConfig)
+    # GDN parameters (auto-mapped to Qwen35TransformerConfig)
     # Fixed across all models (with defaults)
     # group.add_argument("--experimental-attention-variant", type=str, default="gated_delta_net")
     # group.add_argument("--linear-attention-freq", type=int, default=4)

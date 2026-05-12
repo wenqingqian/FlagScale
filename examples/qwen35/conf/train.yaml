@@ -1,14 +1,14 @@
 defaults:
   - _self_
-  - train: 35b_a3b
+  - train: 4b
 
 experiment:
-  exp_name: outputs_qwen35_35ba3b
+  exp_name: outputs_qwen35_4b
   exp_dir: ./${experiment.exp_name}
   task:
     type: train
     backend: megatron
-    entrypoint: ./flagscale/train/megatron/train_qwen35_vl.py
+    entrypoint: ./flagscale/train/megatron/train_qwen35.py
   runner:
     nnodes: 1
     nproc_per_node: 8

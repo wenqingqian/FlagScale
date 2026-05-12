@@ -28,9 +28,9 @@ from torch import Tensor
 from .rope import apply_rotary_pos_emb_absolute
 
 
-class Qwen35VLSelfAttention(SelfAttention):
+class Qwen35SelfAttention(SelfAttention):
     """
-    Qwen3.5 VL Self Attention.
+    Qwen3.5 Self Attention.
 
     Overrides SelfAttention to use apply_rotary_pos_emb_absolute instead of
     the standard apply_rotary_pos_emb for mRoPE support.

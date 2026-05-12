@@ -25,9 +25,9 @@ from megatron.core import parallel_state
 
 
 @dataclass
-class Qwen35VLTransformerConfig(TransformerConfig):
+class Qwen35TransformerConfig(TransformerConfig):
     """
-    Transformer config for Qwen3.5 VL
+    Transformer config for Qwen3.5
     """
 
     # =========================================================================
@@ -97,7 +97,7 @@ def get_vision_model_config(args, config):
     """Build vision encoder config from language transformer config."""
     assert parallel_state.get_virtual_pipeline_model_parallel_world_size() is None, "NotSupported"
 
-    # Qwen3.5 VL vision encoder params from args (varies by model size)
+    # Qwen3.5 vision encoder params from args (varies by model size)
     config.num_layers = args.vision_num_layers
     config.hidden_size = args.vision_hidden_size
     config.ffn_hidden_size = args.vision_ffn_hidden_size

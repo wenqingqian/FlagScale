@@ -35,7 +35,7 @@ def _patch_standard_attention_specs(
     - GDN layers have a ``GatedDeltaNet``-like module.
 
     This function patches only the standard attention layers with *attention_cls*
-    (e.g., Qwen35VLSelfAttention for mRoPE support), leaving GDN layers unchanged.
+    (e.g., Qwen35SelfAttention for mRoPE support), leaving GDN layers unchanged.
 
     Detection heuristic: GDN layer specs use ``GatedDeltaNet`` (or similar) as the
     self_attention module and do NOT have a ``linear_qkv`` submodule. Standard
@@ -51,11 +51,11 @@ def _patch_standard_attention_specs(
             attn_spec.module = attention_cls
 
 
-def get_qwen35vl_language_model_spec(config, patch=True) -> TransformerBlockSubmodules:
-    """Build hybrid GDN + Attention block spec for Qwen3.5 VL language model.
+def get_qwen35_language_model_spec(config, patch=True) -> TransformerBlockSubmodules:
+    """Build hybrid GDN + Attention block spec for Qwen3.5 language model.
 
     Args:
-        config: Qwen35VLTransformerConfig with:
+        config: Qwen35TransformerConfig with:
             - experimental_attention_variant: "gated_delta_net"
             - linear_attention_freq: 4 (1 attention per 4 layers)
             - num_layers: 64 (for 27B dense)
@@ -63,7 +63,7 @@ def get_qwen35vl_language_model_spec(config, patch=True) -> TransformerBlockSubm
     Returns:
         TransformerBlockSubmodules with per-layer specs where:
         - GDN layers use GatedDeltaNet (from Megatron-LM-main)
-        - Standard attention layers use Qwen35VLSelfAttention (mRoPE + output gate)
+        - Standard attention layers use Qwen35SelfAttention (mRoPE + output gate)
     """
     # Build hybrid block spec: produces TransformerBlockSubmodules with
     # per-layer specs (GDN layers get GatedDeltaNet, attention layers get
@@ -76,9 +76,9 @@ def get_qwen35vl_language_model_spec(config, patch=True) -> TransformerBlockSubm
     # This flag only for mtp layer (patch = false).
     if patch:
         # Selectively patch only the standard (full) attention layer specs
-        # with Qwen35VLSelfAttention for mRoPE support. GDN layers are left as-is.
-        from flagscale.models.megatron.qwen35_vl.attention import Qwen35VLSelfAttention
-        _patch_standard_attention_specs(block_spec, Qwen35VLSelfAttention)
+        # with Qwen35SelfAttention for mRoPE support. GDN layers are left as-is.
+        from flagscale.models.megatron.qwen35.attention import Qwen35SelfAttention
+        _patch_standard_attention_specs(block_spec, Qwen35SelfAttention)
 
     return block_spec
 
@@ -132,14 +132,14 @@ def get_mlp_module_spec(
             )
         )
 
-def get_qwen35vl_mtp_block_spec(args, config):
+def get_qwen35_mtp_block_spec(args, config):
     mtp_block_spec = None
     if getattr(args, 'mtp_num_layers', None) is not None:
         from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
-        # MTP uses standard SelfAttention (not Qwen35VLSelfAttention or GDN).
+        # MTP uses standard SelfAttention (not Qwen35SelfAttention or GDN).
         # Generate an unpatched block spec so MTP gets vanilla SelfAttention.
         # NOTE(wqq) Maybe we can make this code clear but it match Megatron-Bridge behavior.
-        unpatched_spec = get_qwen35vl_language_model_spec(config, patch=False)
+        unpatched_spec = get_qwen35_language_model_spec(config, patch=False)
         mtp_block_spec = get_gpt_mtp_block_spec(
             config,
             unpatched_spec,

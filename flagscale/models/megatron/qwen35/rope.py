@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Qwen3.5 VL mRoPE - reuses Qwen3 VL RotaryEmbedding with some different defaults:
+Qwen3.5 mRoPE - reuses Qwen3 VL RotaryEmbedding with some different defaults:
 """
 
 from typing import List, Optional
@@ -31,8 +31,8 @@ from torch import Tensor
 from flagscale.models.megatron.qwen3_vl.language_model import Qwen3VLLanguageRotaryEmbedding
 
 
-class Qwen35VLLanguageRotaryEmbedding(Qwen3VLLanguageRotaryEmbedding):
-    """Qwen3.5 VL mRoPE - inherits Qwen3 VL, overrides defaults and CP slicing for THD."""
+class Qwen35LanguageRotaryEmbedding(Qwen3VLLanguageRotaryEmbedding):
+    """Qwen3.5 mRoPE - inherits Qwen3 VL, overrides defaults and CP slicing for THD."""
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ def get_rope_index(
     attention_mask: Optional[torch.Tensor] = None,
     packed_seq_params: Optional[PackedSeqParams] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute mRoPE position indices for Qwen3.5 VL.
+    """Compute mRoPE position indices for Qwen3.5.
 
     Copied from Qwen3 VL.
     """

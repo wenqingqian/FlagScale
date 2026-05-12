@@ -15,10 +15,10 @@
 # limitations under the License.
 
 """
-Qwen3.5 VL Model.
+Qwen3.5 Model.
 
 Architecture:
-- Hybrid GDN + Attention language model (Qwen35VLLanguageModule)
+- Hybrid GDN + Attention language model (Qwen35LanguageModule)
 - Reuses Qwen3-VL vision encoder (identical architecture)
 """
 
@@ -33,19 +33,19 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.packed_seq_params import PackedSeqParams
 
-from .transformer_config import Qwen35VLTransformerConfig
-from .language_model import Qwen35VLLanguageModule
+from .transformer_config import Qwen35TransformerConfig
+from .language_model import Qwen35LanguageModule
 from .rope import get_rope_index
 
 # Re-use vision model from qwen3_vl (identical vision encoder for qwen3.5)
 from flagscale.models.megatron.qwen3_vl.vision_model import Qwen3VisionModel
 
 
-class Qwen35VLModel(MegatronModule):
-    """Qwen3.5 VL multi-modal model.
+class Qwen35Model(MegatronModule):
+    """Qwen3.5 multi-modal model.
 
     Args:
-        language_transformer_config (Qwen35VLTransformerConfig): Transformer config for language model.
+        language_transformer_config (Qwen35TransformerConfig): Transformer config for language model.
         language_transformer_layer_spec (ModuleSpec): Specifies module to use for transformer layers.
         language_vocab_size (int): Language model vocabulary size.
         language_max_sequence_length (int): Language model maximum sequence length.
@@ -69,7 +69,7 @@ class Qwen35VLModel(MegatronModule):
 
     def __init__(
         self,
-        language_transformer_config: Qwen35VLTransformerConfig,
+        language_transformer_config: Qwen35TransformerConfig,
         language_transformer_layer_spec: ModuleSpec,
         language_vocab_size: int,
         language_max_sequence_length: int,
@@ -94,7 +94,7 @@ class Qwen35VLModel(MegatronModule):
         super().__init__(config=language_transformer_config)
 
         logging.getLogger(__name__).warning(
-            "Qwen3.5 VL model is under development and may be missing features."
+            "Qwen3.5 model is under development and may be missing features."
         )
 
         self.pre_process = pre_process
@@ -122,7 +122,7 @@ class Qwen35VLModel(MegatronModule):
                 post_process=True,
             )
 
-        self.language_model = Qwen35VLLanguageModule(
+        self.language_model = Qwen35LanguageModule(
             config=language_transformer_config,
             transformer_layer_spec=language_transformer_layer_spec,
             vocab_size=language_vocab_size,
@@ -194,7 +194,7 @@ class Qwen35VLModel(MegatronModule):
         packed_seq_params: PackedSeqParams = None,
         extra_block_kwargs: dict = None,
     ) -> torch.Tensor:
-        """Forward function of Qwen3.5 VL model."""
+        """Forward function of Qwen3.5 model."""
         use_inference_kv_cache = (
             inference_params is not None
             and "image_tokens_count" in inference_params.key_value_memory_dict
@@ -285,7 +285,7 @@ class Qwen35VLModel(MegatronModule):
         video_grid_thw: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute mRoPE position indices for Qwen3.5 VL.
+        """Compute mRoPE position indices for Qwen3.5.
         """
         return get_rope_index(
             spatial_merge_size=self.config.spatial_merge_size,
