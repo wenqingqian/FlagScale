@@ -104,6 +104,7 @@ model:
   num_experts: 256
   moe_router_topk: 8
   moe_ffn_hidden_size: 512
+  moe_shared_expert_gate: True
   moe_shared_expert_intermediate_size: 512
   moe_router_dtype: fp32
   moe_router_load_balancing_type: global_aux_loss
