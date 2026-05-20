@@ -72,7 +72,7 @@ from megatron.training.global_vars import get_tokenizer
 
 from flagscale.models.megatron.qwen2_5_vl.tensor_parallel import broadcast_data
 
-from flagscale.models.megatron.qwen35.model import Qwen35Model
+from flagscale.models.megatron.qwen35.qwen35_model import Qwen35Model
 from flagscale.models.megatron.qwen35.transformer_config import (
     Qwen35TransformerConfig,
     get_vision_model_config,
@@ -80,8 +80,10 @@ from flagscale.models.megatron.qwen35.transformer_config import (
 )
 from flagscale.models.megatron.qwen35.layer_specs import (
     get_qwen35_language_model_spec,
-    get_qwen35_mtp_block_spec
+    get_qwen35_mtp_block_spec,
+    get_mlp_module_spec
 )
+from flagscale.models.megatron.qwen3_vl.layer_specs import get_qwen3vl_vision_model_spec
 
 from megatron.plugin.platform import get_platform
 cur_platform = get_platform()
@@ -125,9 +127,7 @@ def model_provider(
     language_layer_spec = get_qwen35_language_model_spec(config)
 
     # Vision model spec (identical to Qwen3-VL)
-    from flagscale.models.megatron.qwen3_vl.layer_specs import get_qwen3vl_vision_model_spec
     vision_model_spec = get_qwen3vl_vision_model_spec()
-    from flagscale.models.megatron.qwen35.layer_specs import get_mlp_module_spec
     vision_projector_spec = get_mlp_module_spec(add_norm=False).submodules
 
     if args.enable_variable_seq_lengths:
@@ -136,6 +136,7 @@ def model_provider(
     # MTP (Multi-Token Prediction) spec
     mtp_block_spec = get_qwen35_mtp_block_spec(args, config)
 
+    args.padded_vocab_size = args.vocab_size
     model = Qwen35Model(
         language_transformer_config=config,
         language_transformer_layer_spec=language_layer_spec,

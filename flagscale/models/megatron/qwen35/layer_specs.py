@@ -14,12 +14,25 @@
 
 from typing import Optional
 
+from megatron.core.extensions.transformer_engine import (
+    TELayerNormColumnParallelLinear,
+    TERowParallelLinear,
+    TEColumnParallelLinear,
+    TEColumnParallelGroupedLinear,
+    TERowParallelGroupedLinear,
+)
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,
 )
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+from megatron.core.transformer.attention import SelfAttention
+from megatron.core.transformer.mlp import MLP, MLPSubmodules
+from megatron.core.transformer.moe.experts import TEGroupedMLP
+from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
-from megatron.core.transformer.attention import SelfAttention
+
+from flagscale.models.megatron.qwen35.attention import Qwen35SelfAttention
 
 
 def _patch_standard_attention_specs(
@@ -77,7 +90,6 @@ def get_qwen35_language_model_spec(config, patch=True) -> TransformerBlockSubmod
     if patch:
         # Selectively patch only the standard (full) attention layer specs
         # with Qwen35SelfAttention for mRoPE support. GDN layers are left as-is.
-        from flagscale.models.megatron.qwen35.attention import Qwen35SelfAttention
         _patch_standard_attention_specs(block_spec, Qwen35SelfAttention)
 
     return block_spec
@@ -88,17 +100,6 @@ def get_mlp_module_spec(
     moe_grouped_gemm: bool = False, add_norm: bool = True
 ):
     """Get MLP or MoE module spec for vision/language model."""
-    from megatron.core.extensions.transformer_engine import (
-        TELayerNormColumnParallelLinear,
-        TERowParallelLinear,
-        TEColumnParallelLinear,
-        TEColumnParallelGroupedLinear,
-        TERowParallelGroupedLinear,
-    )
-    from megatron.core.transformer.mlp import MLP, MLPSubmodules
-    from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
-    from megatron.core.transformer.moe.experts import TEGroupedMLP
-
     assert use_te, "Only Transformer Engine backend is supported"
     if num_experts is None:
         if add_norm:
@@ -135,7 +136,6 @@ def get_mlp_module_spec(
 def get_qwen35_mtp_block_spec(args, config):
     mtp_block_spec = None
     if getattr(args, 'mtp_num_layers', None) is not None:
-        from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
         # MTP uses standard SelfAttention (not Qwen35SelfAttention or GDN).
         # Generate an unpatched block spec so MTP gets vanilla SelfAttention.
         # NOTE(wqq) Maybe we can make this code clear but it match Megatron-Bridge behavior.

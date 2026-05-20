@@ -1,7 +1,7 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License").
 
-from .model import Qwen35Model
+from .qwen35_model import Qwen35Model
 from .language_model import Qwen35LanguageModule
 from .transformer_config import Qwen35TransformerConfig, get_vision_model_config, get_vision_projection_config
 from .layer_specs import get_qwen35_language_model_spec

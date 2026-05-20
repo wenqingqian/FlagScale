@@ -210,6 +210,9 @@ class Qwen35Model(MegatronModule):
                     vision_data=vision_data,
                     grid_thw=vision_grid_thw,
                 )
+            else:
+                vision_embeds = None
+                deepstack_feature_lists = None
 
             if inference_params is not None:
                 raise NotImplementedError()
