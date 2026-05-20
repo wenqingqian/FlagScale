@@ -23,19 +23,18 @@ Architecture:
 """
 
 import logging
-from typing import Optional
 
 import torch
 
 from megatron.core import InferenceParams
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.packed_seq_params import PackedSeqParams
 
-from .transformer_config import Qwen35TransformerConfig
 from .language_model import Qwen35LanguageModule
 from .rope import get_rope_index
+from .transformer_config import Qwen35TransformerConfig
 
 # Re-use vision model from qwen3_vl (identical vision encoder for qwen3.5)
 from flagscale.models.megatron.qwen3_vl.vision_model import Qwen3VisionModel
@@ -79,7 +78,7 @@ class Qwen35Model(MegatronModule):
         vision_projection_layer_spec: ModuleSpec,
         vision_projection_type: str = "mlp",
         parallel_output: bool = True,
-        language_position_embedding_type: str = 'mrope',
+        language_position_embedding_type: str = "mrope",
         language_rotary_percent: float = 0.25,
         pre_process: bool = True,
         post_process: bool = True,
@@ -107,7 +106,9 @@ class Qwen35Model(MegatronModule):
         self.vision_projection = None
         self.language_model = None
 
-        self.square_merge_size = vision_projection_config.ffn_hidden_size // vision_transformer_config.hidden_size
+        self.square_merge_size = (
+            vision_projection_config.ffn_hidden_size // vision_transformer_config.hidden_size
+        )
 
         self.share_embeddings_and_output_weights = False
 
@@ -153,7 +154,7 @@ class Qwen35Model(MegatronModule):
     def set_input_tensor(self, input_tensor) -> None:
         if not isinstance(input_tensor, list):
             input_tensor = [input_tensor]
-        assert len(input_tensor) == 1, 'input_tensor should only be length 1'
+        assert len(input_tensor) == 1, "input_tensor should only be length 1"
 
         if self.pre_process:
             self.encoder_hidden_state = input_tensor[0]
@@ -283,13 +284,12 @@ class Qwen35Model(MegatronModule):
 
     def get_rope_index(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        image_grid_thw: Optional[torch.LongTensor] = None,
-        video_grid_thw: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
+        input_ids: torch.LongTensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute mRoPE position indices for Qwen3.5.
-        """
+        """Compute mRoPE position indices for Qwen3.5."""
         return get_rope_index(
             spatial_merge_size=self.config.spatial_merge_size,
             image_token_id=self.config.image_token_id,

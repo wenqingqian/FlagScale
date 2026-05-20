@@ -15,6 +15,8 @@
 # limitations under the License.
 
 from einops import rearrange
+from torch import Tensor
+
 from megatron.core.transformer.attention import (
     HAVE_FA3,
     BaseInferenceContext,
@@ -23,7 +25,6 @@ from megatron.core.transformer.attention import (
     deprecate_inference_params,
     is_fa_min_version,
 )
-from torch import Tensor
 
 from .rope import apply_rotary_pos_emb_absolute
 
@@ -55,7 +56,9 @@ class Qwen35SelfAttention(SelfAttention):
     ) -> tuple[Tensor, Tensor]:
         """Forward pass with absolute RoPE for mRoPE support."""
         # Check if we need to skip RoPE
-        no_rope = self.config.no_rope_freq[self.layer_number - 1] if self.config.no_rope_freq else False
+        no_rope = (
+            self.config.no_rope_freq[self.layer_number - 1] if self.config.no_rope_freq else False
+        )
         if no_rope:
             rotary_pos_emb = None
 
@@ -63,7 +66,7 @@ class Qwen35SelfAttention(SelfAttention):
 
         if inference_context and inference_context.is_dynamic_batching():
             assert HAVE_FA3 or is_fa_min_version("2.7.3"), (
-                "flash attn verion v2.7.3 and above is required for dynamic batching."
+                "flash attn version v2.7.3 and above is required for dynamic batching."
             )
 
         if self.config.flash_decode and not self.training and inference_context is not None:
@@ -83,12 +86,18 @@ class Qwen35SelfAttention(SelfAttention):
         else:
             query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
         # Adjust key, value, and rotary_pos_emb for inference
-        in_decode_mode = inference_context is not None and inference_context.is_decode_only() and not self.training
+        in_decode_mode = (
+            inference_context is not None
+            and inference_context.is_decode_only()
+            and not self.training
+        )
 
         if in_decode_mode and self.config.flash_decode:
             assert self.layer_number in inference_context.key_value_memory_dict
             assert inference_context.sequence_len_offset is not None
-            inference_key_memory, inference_value_memory = inference_context.key_value_memory_dict[self.layer_number]
+            inference_key_memory, inference_value_memory = inference_context.key_value_memory_dict[
+                self.layer_number
+            ]
             output = self.flash_decode(
                 sequence_len_offset=sequence_len_offset,
                 query_layer=query,
@@ -107,18 +116,24 @@ class Qwen35SelfAttention(SelfAttention):
             output, bias = self.linear_proj(context_layer)
             return output, bias
 
-        if in_decode_mode and self.config.enable_cuda_graph and inference_context.is_static_batching():
+        if (
+            in_decode_mode
+            and self.config.enable_cuda_graph
+            and inference_context.is_static_batching()
+        ):
             raise ValueError("CUDA graphs must use flash decode with static batching!")
 
-        query, key, value, rotary_pos_emb, attn_mask_type, block_table = self._adjust_key_value_for_inference(
-            inference_context,
-            query,
-            key,
-            value,
-            rotary_pos_emb,
-            rotary_pos_cos,
-            rotary_pos_sin,
-            sequence_len_offset,
+        query, key, value, rotary_pos_emb, attn_mask_type, block_table = (
+            self._adjust_key_value_for_inference(
+                inference_context,
+                query,
+                key,
+                value,
+                rotary_pos_emb,
+                rotary_pos_cos,
+                rotary_pos_sin,
+                sequence_len_offset,
+            )
         )
 
         if packed_seq_params is not None:
@@ -191,10 +206,14 @@ class Qwen35SelfAttention(SelfAttention):
             else:
                 q, k, v = query, key, value
                 cu_query_lengths, max_seqlen_q = inference_context.cu_query_lengths()
-                cu_kv_lengths, kv_lengths, kv_lengths_decode_only, max_seqlen_k = inference_context.cu_kv_lengths()
+                cu_kv_lengths, kv_lengths, kv_lengths_decode_only, max_seqlen_k = (
+                    inference_context.cu_kv_lengths()
+                )
 
                 core_attn_out = self.flash_decode_and_prefill(
-                    q, k, v,
+                    q,
+                    k,
+                    v,
                     max_seqlen_q,
                     max_seqlen_k,
                     cu_query_lengths,

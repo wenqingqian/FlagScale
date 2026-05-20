@@ -18,15 +18,14 @@
 Qwen3.5 mRoPE - reuses Qwen3 VL RotaryEmbedding with some different defaults:
 """
 
-from typing import List, Optional
-
 import torch
+from torch import Tensor
+
 from megatron.core.models.common.embeddings.rope_utils import (
     _apply_rotary_pos_emb_bshd,
     get_pos_emb_on_this_cp_rank,
 )
 from megatron.core.packed_seq_params import PackedSeqParams
-from torch import Tensor
 
 from flagscale.models.megatron.qwen3_vl.language_model import Qwen3VLLanguageRotaryEmbedding
 
@@ -39,14 +38,18 @@ class Qwen35LanguageRotaryEmbedding(Qwen3VLLanguageRotaryEmbedding):
         kv_channels: int,
         rotary_percent: float = 0.25,
         rotary_interleaved: bool = False,
-        seq_len_interpolation_factor: Optional[float] = None,
+        seq_len_interpolation_factor: float | None = None,
         rotary_base: int = 10000000,
         cp_group: torch.distributed.ProcessGroup = None,
     ) -> None:
         assert cp_group is not None, "cp_group is required"
         super().__init__(
-            kv_channels, rotary_percent, rotary_interleaved,
-            seq_len_interpolation_factor, rotary_base, cp_group,
+            kv_channels,
+            rotary_percent,
+            rotary_interleaved,
+            seq_len_interpolation_factor,
+            rotary_base,
+            cp_group,
         )
         self.mrope_section = [11, 11, 10]
         # keep this for packed sequence
@@ -55,8 +58,8 @@ class Qwen35LanguageRotaryEmbedding(Qwen3VLLanguageRotaryEmbedding):
     def forward(
         self,
         position_ids: torch.Tensor,
-        mrope_section: List[int] | None = None,
-        packed_seq_params: Optional[PackedSeqParams] = None,
+        mrope_section: list[int] | None = None,
+        packed_seq_params: PackedSeqParams | None = None,
         **kwargs,
     ) -> Tensor:
         assert packed_seq_params is None
@@ -80,11 +83,11 @@ def get_rope_index(
     image_token_id: int,
     video_token_id: int,
     vision_start_token_id: int,
-    input_ids: Optional[torch.LongTensor] = None,
-    image_grid_thw: Optional[torch.LongTensor] = None,
-    video_grid_thw: Optional[torch.LongTensor] = None,
-    attention_mask: Optional[torch.Tensor] = None,
-    packed_seq_params: Optional[PackedSeqParams] = None,
+    input_ids: torch.LongTensor | None = None,
+    image_grid_thw: torch.LongTensor | None = None,
+    video_grid_thw: torch.LongTensor | None = None,
+    attention_mask: torch.Tensor | None = None,
+    packed_seq_params: PackedSeqParams | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute mRoPE position indices for Qwen3.5.
 
@@ -131,7 +134,9 @@ def get_rope_index(
         for i, sample_input_ids in enumerate(total_input_ids):
             sample_input_ids = sample_input_ids[attention_mask[i] == 1]
             image_nums, video_nums = 0, 0
-            vision_start_indices = torch.argwhere(sample_input_ids == vision_start_token_id).squeeze(1)
+            vision_start_indices = torch.argwhere(
+                sample_input_ids == vision_start_token_id
+            ).squeeze(1)
             vision_tokens = sample_input_ids[vision_start_indices + 1]
             image_nums = (vision_tokens == image_token_id).sum()
             video_nums = (vision_tokens == video_token_id).sum()
@@ -179,10 +184,27 @@ def get_rope_index(
                 st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
                 llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
-                t_index = torch.arange(llm_grid_t).view(-1, 1).expand(-1, llm_grid_h * llm_grid_w).flatten()
-                h_index = torch.arange(llm_grid_h).view(1, -1, 1).expand(llm_grid_t, -1, llm_grid_w).flatten()
-                w_index = torch.arange(llm_grid_w).view(1, 1, -1).expand(llm_grid_t, llm_grid_h, -1).flatten()
-                llm_pos_ids_list.append(torch.stack([t_index, h_index, w_index]) + text_len + st_idx)
+                t_index = (
+                    torch.arange(llm_grid_t)
+                    .view(-1, 1)
+                    .expand(-1, llm_grid_h * llm_grid_w)
+                    .flatten()
+                )
+                h_index = (
+                    torch.arange(llm_grid_h)
+                    .view(1, -1, 1)
+                    .expand(llm_grid_t, -1, llm_grid_w)
+                    .flatten()
+                )
+                w_index = (
+                    torch.arange(llm_grid_w)
+                    .view(1, 1, -1)
+                    .expand(llm_grid_t, llm_grid_h, -1)
+                    .flatten()
+                )
+                llm_pos_ids_list.append(
+                    torch.stack([t_index, h_index, w_index]) + text_len + st_idx
+                )
                 st = ed + llm_grid_t * llm_grid_h * llm_grid_w
 
             if st < len(input_tokens):
@@ -194,7 +216,9 @@ def get_rope_index(
             position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
             mrope_position_deltas.append(llm_positions.max() + 1 - len(total_input_ids[i]))
 
-        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=total_input_ids.device).unsqueeze(1)
+        mrope_position_deltas = torch.tensor(
+            mrope_position_deltas, device=total_input_ids.device
+        ).unsqueeze(1)
         return position_ids, mrope_position_deltas
     else:
         if attention_mask is not None:
@@ -227,17 +251,18 @@ def apply_rotary_pos_emb_thd_absolute(
     t: Tensor, cu_seqlens: Tensor, freqs: Tensor, rotary_interleaved: bool = False
 ) -> Tensor:
     """Apply RoPE for THD (packed sequence) format."""
-    return _apply_rotary_pos_emb_bshd(t[:, None], freqs, rotary_interleaved=rotary_interleaved).squeeze(1)
+    return _apply_rotary_pos_emb_bshd(
+        t[:, None], freqs, rotary_interleaved=rotary_interleaved
+    ).squeeze(1)
 
 
 def apply_rotary_pos_emb_absolute(
     t: Tensor,
     freqs: Tensor,
     config,
-    cu_seqlens: Optional[Tensor] = None,
+    cu_seqlens: Tensor | None = None,
 ):
-    """Apply absolute RoPE for mRoPE.
-    """
+    """Apply absolute RoPE for mRoPE."""
     assert not config.apply_rope_fusion
     orig_t_dtype = t.dtype
     if config.apply_rotary_pos_emb_in_fp32:
@@ -246,7 +271,9 @@ def apply_rotary_pos_emb_absolute(
     if cu_seqlens is None:
         result = _apply_rotary_pos_emb_bshd(t, freqs, rotary_interleaved=config.rotary_interleaved)
     else:
-        result = apply_rotary_pos_emb_thd_absolute(t, cu_seqlens, freqs, rotary_interleaved=config.rotary_interleaved)
+        result = apply_rotary_pos_emb_thd_absolute(
+            t, cu_seqlens, freqs, rotary_interleaved=config.rotary_interleaved
+        )
 
     if config.apply_rotary_pos_emb_in_fp32:
         result = result.to(orig_t_dtype)

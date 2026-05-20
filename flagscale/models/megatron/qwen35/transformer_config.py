@@ -14,14 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass, field
 from functools import partial
-from typing import List
 
 import torch
 
-from dataclasses import dataclass, field
-from megatron.core.transformer import TransformerConfig
 from megatron.core import parallel_state
+from megatron.core.transformer import TransformerConfig
 
 
 @dataclass
@@ -68,7 +67,7 @@ class Qwen35TransformerConfig(TransformerConfig):
     # VL-specific parameters
     # =========================================================================
     position_embedding_type: str = "mrope"
-    mrope_section: List[int] = field(default_factory=lambda: [11, 11, 10])
+    mrope_section: list[int] = field(default_factory=lambda: [11, 11, 10])
     apply_rotary_pos_emb_in_fp32: bool = False
     apply_rope_fusion: bool = False
 
@@ -88,7 +87,7 @@ class Qwen35TransformerConfig(TransformerConfig):
     scatter_embedding_sequence_parallel: bool = False
 
     # Vision-specific (shared with Qwen3-VL)
-    deepstack_visual_indexes: List[int] = field(default_factory=list)
+    deepstack_visual_indexes: list[int] = field(default_factory=list)
     fp16_lm_cross_entropy: bool = False
     share_embeddings_and_output_weights: bool = False
 
@@ -118,7 +117,7 @@ def get_vision_model_config(args, config):
     config.bias_activation_fusion = False
     config.bias_dropout_fusion = False
     config.attention_softmax_in_fp32 = True
-    config.normalization = 'LayerNorm'
+    config.normalization = "LayerNorm"
     config.seq_length = args.seq_length
 
     config.tp_comm_overlap = False
@@ -137,8 +136,8 @@ def get_vision_model_config(args, config):
 
     # Reset recompute settings for vision encoder
     if args.vision_recompute_activations:
-        config.recompute_granularity = 'full'
-        config.recompute_method = 'uniform'
+        config.recompute_granularity = "full"
+        config.recompute_method = "uniform"
         config.recompute_num_layers = 1
 
     return config
@@ -149,7 +148,7 @@ def get_vision_projection_config(config, embed_dim, spatial_merge_size):
     config.gated_linear_unit = False
     config.bias_activation_fusion = False
     config.add_bias_linear = True
-    config.ffn_hidden_size = embed_dim * (spatial_merge_size ** 2)
+    config.ffn_hidden_size = embed_dim * (spatial_merge_size**2)
     config.activation_func = partial(torch.nn.functional.gelu, approximate="tanh")
     config.tp_comm_overlap = False
     config.sequence_parallel = False

@@ -14,30 +14,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Literal, Optional, List
+from typing import Literal
 
 import torch
-from torch import Tensor
 
-from megatron.core import tensor_parallel
+from megatron.core import parallel_state, tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
-from megatron.core import parallel_state
-from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.models.gpt.gpt_model import GPTModel
+from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.quantization.utils import get_quant_config_or_none
 from megatron.core.transformer.enums import ModelType
+from megatron.core.transformer.multi_token_prediction import (
+    MultiTokenPredictionBlock,
+    mtp_on_this_rank,
+)
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import deprecate_inference_params
-from megatron.core.models.gpt.gpt_model import GPTModel
-from megatron.core.transformer.multi_token_prediction import (
-    MultiTokenPredictionBlock,
-    mtp_on_this_rank
-)
-from megatron.core.process_groups_config import ProcessGroupCollection
 
 from .language_transformer_block import LanguageTransformerBlock
 from .rope import Qwen35LanguageRotaryEmbedding
-
 from flagscale.models.megatron.qwen2_5_vl.language_module import QwenVLLanguageModelEmbedding
 
 
@@ -76,17 +72,17 @@ class Qwen35LanguageModule(GPTModel):
         parallel_output: bool = True,
         share_embeddings_and_output_weights: bool = False,
         position_embedding_type: Literal[
-            'learned_absolute', 'rope', 'mrope', 'none'
-        ] = 'learned_absolute',
+            "learned_absolute", "rope", "mrope", "none"
+        ] = "learned_absolute",
         rotary_percent: float = 1.0,
         rotary_base: int = 10000,
         rope_scaling: bool = False,
         rope_scaling_factor: float = 8.0,
         scatter_embedding_sequence_parallel: bool = True,
-        seq_len_interpolation_factor: Optional[float] = None,
-        mtp_block_spec: Optional[ModuleSpec] = None,
-        pg_collection: Optional[ProcessGroupCollection] = None,
-        vp_stage: Optional[int] = None,
+        seq_len_interpolation_factor: float | None = None,
+        mtp_block_spec: ModuleSpec | None = None,
+        pg_collection: ProcessGroupCollection | None = None,
+        vp_stage: int | None = None,
     ) -> None:
         super(GPTModel, self).__init__(config=config, pg_collection=pg_collection)
 
@@ -103,7 +99,7 @@ class Qwen35LanguageModule(GPTModel):
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.vp_stage = vp_stage
 
-        if hasattr(self.config, 'position_embedding_type'):
+        if hasattr(self.config, "position_embedding_type"):
             self.position_embedding_type = self.config.position_embedding_type
         else:
             self.position_embedding_type = position_embedding_type
@@ -113,7 +109,7 @@ class Qwen35LanguageModule(GPTModel):
         self.max_position_embeddings = max_sequence_length
         self.rotary_percent = rotary_percent
 
-        if hasattr(self.config, 'rotary_base'):
+        if hasattr(self.config, "rotary_base"):
             self.rotary_base = self.config.rotary_base
         else:
             self.rotary_base = rotary_base
@@ -131,7 +127,7 @@ class Qwen35LanguageModule(GPTModel):
                 position_embedding_type=position_embedding_type,
             )
 
-        if self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
+        if self.position_embedding_type == "mrope" and not self.config.multi_latent_attention:
             cp_group = parallel_state.get_context_parallel_group(check_initialized=False)
             self.rotary_pos_emb = Qwen35LanguageRotaryEmbedding(
                 kv_channels=self.config.kv_channels,
@@ -142,9 +138,9 @@ class Qwen35LanguageModule(GPTModel):
                 cp_group=cp_group,
             )
             self.mrope_section = self.config.mrope_section
-            assert (
-                self.mrope_section is not None
-            ), "mrope requires mrope_section setting, but we got None from TransformerConfig"
+            assert self.mrope_section is not None, (
+                "mrope requires mrope_section setting, but we got None from TransformerConfig"
+            )
 
         # Cache for RoPE tensors which do not change between iterations.
         self.rotary_pos_emb_cache = {}
@@ -196,10 +192,10 @@ class Qwen35LanguageModule(GPTModel):
 
         if has_config_logger_enabled(self.config):
             log_config_to_disk(
-                self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
+                self.config, self.state_dict(), prefix=f"{type(self).__name__}_init_ckpt"
             )
         for name, module in self.named_modules():
-            if hasattr(module, 'finish_init'):
+            if hasattr(module, "finish_init"):
                 quant_config = get_quant_config_or_none(name, self.config.quant_recipe)
                 module.finish_init(quant_config)
 
@@ -215,8 +211,8 @@ class Qwen35LanguageModule(GPTModel):
         extra_block_kwargs=None,
         runtime_gather_output=None,
         # args for deepstack
-        visual_pos_masks: Optional[torch.Tensor] = None,
-        deepstack_visual_embeds: Optional[list[torch.Tensor]] = None,
+        visual_pos_masks: torch.Tensor | None = None,
+        deepstack_visual_embeds: list[torch.Tensor] | None = None,
         *,
         inference_params=None,
         loss_mask=None,
@@ -224,14 +220,19 @@ class Qwen35LanguageModule(GPTModel):
         # Forward logic adapted from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.text_model.Qwen3VLGPTModel
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
-        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset, padding_mask = (
-            self._preprocess(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                decoder_input=decoder_input,
-                inference_context=inference_context,
-                packed_seq_params=packed_seq_params,
-            )
+        (
+            decoder_input,
+            rotary_pos_emb,
+            rotary_pos_cos,
+            rotary_pos_sin,
+            sequence_len_offset,
+            padding_mask,
+        ) = self._preprocess(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            decoder_input=decoder_input,
+            inference_context=inference_context,
+            packed_seq_params=packed_seq_params,
         )
 
         # Run decoder

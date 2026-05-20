@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from megatron.core.extensions.transformer_engine import (
-    TELayerNormColumnParallelLinear,
-    TERowParallelLinear,
-    TEColumnParallelLinear,
     TEColumnParallelGroupedLinear,
+    TEColumnParallelLinear,
+    TELayerNormColumnParallelLinear,
     TERowParallelGroupedLinear,
+    TERowParallelLinear,
 )
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,
@@ -96,8 +95,10 @@ def get_qwen35_language_model_spec(config, patch=True) -> TransformerBlockSubmod
 
 
 def get_mlp_module_spec(
-    use_te: bool = True, num_experts: Optional[int] = None,
-    moe_grouped_gemm: bool = False, add_norm: bool = True
+    use_te: bool = True,
+    num_experts: int | None = None,
+    moe_grouped_gemm: bool = False,
+    add_norm: bool = True,
 ):
     """Get MLP or MoE module spec for vision/language model."""
     assert use_te, "Only Transformer Engine backend is supported"
@@ -128,14 +129,15 @@ def get_mlp_module_spec(
                     submodules=MLPSubmodules(
                         linear_fc1=TEColumnParallelGroupedLinear,
                         linear_fc2=TERowParallelGroupedLinear,
-                    )
+                    ),
                 ),
-            )
+            ),
         )
+
 
 def get_qwen35_mtp_block_spec(args, config):
     mtp_block_spec = None
-    if getattr(args, 'mtp_num_layers', None) is not None:
+    if getattr(args, "mtp_num_layers", None) is not None:
         # MTP uses standard SelfAttention (not Qwen35SelfAttention or GDN).
         # Generate an unpatched block spec so MTP gets vanilla SelfAttention.
         # NOTE(wqq) Maybe we can make this code clear but it match Megatron-Bridge behavior.

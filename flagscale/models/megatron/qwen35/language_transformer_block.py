@@ -17,4 +17,4 @@
 # Re-export LanguageTransformerBlock from qwen3_vl (deepstack logic is identical)
 from flagscale.models.megatron.qwen3_vl.language_transformer_block import LanguageTransformerBlock
 
-__all__ = ['LanguageTransformerBlock']
+__all__ = ["LanguageTransformerBlock"]
