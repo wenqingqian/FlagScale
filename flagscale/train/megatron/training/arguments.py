@@ -745,7 +745,7 @@ def validate_args(args, defaults={}):
         assert not args.use_legacy_models, "The legacy Megatron models does not support Multi-Token Prediction (MTP)."
         assert args.position_embedding_type in ("rope", "none", "mrope"), (
             f"Multi-Token Prediction (MTP) is not supported with {args.position_embedding_type} position embedding type."
-            + f"The supported position embedding types are rope and none."
+            + f"The supported position embedding types are rope, none, and mrope."
         )
 
     # Validate MTP args for hybrid vs non-hybrid models
