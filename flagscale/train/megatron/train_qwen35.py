@@ -430,21 +430,6 @@ def datasets_provider(worker_config=None):
     return train_dataset, val_datasets_without_source_datasets, None
 
 
-def is_first_or_last_stage(pp_size, transformer_pipeline_model_parallel_size):
-    """Check if the current pipeline parallel stage is first or last."""
-    if pp_size == 1:
-        return True
-    is_valid_rank = False
-    pp_rank = get_pipeline_model_parallel_rank()
-    if transformer_pipeline_model_parallel_size == 0:
-        is_valid_rank = pp_rank in (0, pp_size - 1)
-    elif transformer_pipeline_model_parallel_size == 1:
-        is_valid_rank = pp_rank in (0, 1, pp_size - 1)
-    else:
-        raise NotImplementedError("encoder-pipeline-model-parallel-size > 1 is not supported yet")
-    return is_valid_rank
-
-
 def is_dataloader_rank(transformer_pipeline_model_parallel_size):
     """Check if we should have the dataloader on this rank."""
     is_first_rank = get_tensor_model_parallel_rank() == 0
@@ -526,9 +511,9 @@ def cyclic_iter(iter):
             yield x
 
 
-def add_multimodal_extra_args(parser):
+def add_qwen35_extra_args(parser):
     """Extra arguments for Qwen3.5 training."""
-    group = parser.add_argument_group(title="multimodal arguments")
+    group = parser.add_argument_group(title="qwen35 arguments")
     group.add_argument("--disable-vision-class-token", action="store_true", default=False)
     group.add_argument("--dataloader-save", type=str, default=None)
     group.add_argument("--extra-vocab-size", type=int, default=0)
@@ -558,28 +543,13 @@ def add_multimodal_extra_args(parser):
         default=False,
     )
     group.add_argument("--use-te", action="store_true", default=False)
-
-    # GDN parameters (auto-mapped to Qwen35TransformerConfig)
-    # Fixed across all models (with defaults)
-    # group.add_argument("--experimental-attention-variant", type=str, default="gated_delta_net")
-    # group.add_argument("--linear-attention-freq", type=int, default=4)
-    # group.add_argument("--linear-conv-kernel-dim", type=int, default=4)
-    # group.add_argument("--linear-key-head-dim", type=int, default=128)
-    # group.add_argument("--linear-value-head-dim", type=int, default=128)
-    # group.add_argument("--linear-num-key-heads", type=int, default=16)
-    # group.add_argument("--attention-output-gate", action="store_true", default=True)
     group.add_argument("--layernorm-zero-centered-gamma", action="store_true", default=True)
-    # # Varies across models (no default, must be set in yaml)
-    # group.add_argument("--linear-num-value-heads", type=int, default=None)
 
     # Vision encoder parameters (varies across models, no default)
     group.add_argument("--vision-num-layers", type=int, default=None)
     group.add_argument("--vision-hidden-size", type=int, default=None)
     group.add_argument("--vision-ffn-hidden-size", type=int, default=None)
     group.add_argument("--vision-num-attention-heads", type=int, default=None)
-
-    # MoE: most params registered in FlagScale _add_moe_args, only add missing ones
-    # group.add_argument("--moe-shared-expert-gate", action="store_true", default=False)
 
     return parser
 
@@ -593,7 +563,7 @@ if __name__ == "__main__":
         ModelType.encoder_or_decoder,
         forward_step,
         args_defaults={'tokenizer_type': 'Qwen2VLTokenizer'},
-        extra_args_provider=add_multimodal_extra_args,
+        extra_args_provider=add_qwen35_extra_args,
         process_non_loss_data_func=write_online_eval_to_tensorboard,
         non_loss_data_func=run_online_eval,
     )
