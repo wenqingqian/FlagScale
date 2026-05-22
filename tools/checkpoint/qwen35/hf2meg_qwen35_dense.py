@@ -18,32 +18,26 @@ from pathlib import Path
 import torch
 import yaml
 from safetensors import safe_open
-# Toggle layer norm adjustment for zero-centered gamma
-# NOTE: These are now controlled via command-line args for independent LLM/vision tuning.
-LN_ADJUSTMENT = True          # Legacy global flag (kept for backward compat)
-LLM_LN_ADJUSTMENT = True      # Apply -1.0 to LLM layernorms
-VISION_LN_ADJUSTMENT = True   # Apply -1.0 to vision layernorms
-MTP_LN_ADJUSTMENT = True      # Apply -1.0 to MTP layernorms
+
+# Layer norm adjustment for zero-centered gamma.
+# Controls LLM and MTP layernorms only. Vision layernorms are never adjusted.
+# Enabled by default; use --no-adjust-ln to disable.
+LN_ADJUSTMENT = True
 
 
-def adjust_ln_weight(weight, force=None):
-    """Apply layer norm adjustment (subtract 1.0) for zero-centered gamma.
-
-    Args:
-        weight: The weight tensor to adjust.
-        force:  If None, use the global LN_ADJUSTMENT flag.
-                If True/False, override the global flag.
-    """
-    do_adjust = force if force is not None else LN_ADJUSTMENT
-    return weight - 1.0 if do_adjust else weight
+def adjust_ln_weight(weight):
+    """Apply layer norm adjustment (subtract 1.0) for zero-centered gamma."""
+    return weight - 1.0 if LN_ADJUSTMENT else weight
 
 
 # ============================================================
 # Config
 # ============================================================
 
+
 class Config:
     """Flat config built from training yaml."""
+
     def __init__(self, yaml_path):
         with open(yaml_path) as f:
             raw = yaml.safe_load(f)
@@ -75,25 +69,44 @@ class Config:
         self.vision_num_attention_heads = model.get("vision_num_attention_heads", 16)
         self.vision_ffn_hidden_size = model.get("vision_ffn_hidden_size", 4096)
 
+        self.patch_size = model.get("patch_size", 16)
+        self.temporal_patch_size = 2  # hardcoded in get_vision_model_config
+        self.use_linear_proj = model.get("vision_patch_embed_linear", False)
+
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--yaml", required=True, help="Path to training yaml config")
     p.add_argument("--hf-dir", required=True, help="Path to HF checkpoint directory")
-    p.add_argument("--save-dir", required=True,
-                   help="Output base directory (e.g. xxx/checkpoints). "
-                        "Script creates xxx/checkpoints/iter_0000001/mp_rank_*/ automatically.")
-    p.add_argument("--ref-ckpt-dir", default=None,
-                   help="Reference Megatron checkpoint dir to match embedding shape (optional)")
-    p.add_argument("--adjust-embedding", action="store_true",
-                   help="Adjust embedding vocab size to match reference checkpoint "
-                        "(default: keep HF original size)")
+    p.add_argument(
+        "--save-dir",
+        required=True,
+        help="Output base directory (e.g. xxx/checkpoints). "
+        "Script creates xxx/checkpoints/release/mp_rank_*/ automatically.",
+    )
+    p.add_argument(
+        "--ref-ckpt-dir",
+        default=None,
+        help="Reference Megatron checkpoint dir to match embedding shape (optional)",
+    )
+    p.add_argument(
+        "--adjust-embedding",
+        action="store_true",
+        help="Adjust embedding vocab size to match reference checkpoint "
+        "(default: keep HF original size)",
+    )
+    p.add_argument(
+        "--no-adjust-ln",
+        action="store_true",
+        help="Disable layer norm adjustment (zero-centered gamma)",
+    )
     return p.parse_args()
 
 
 # ============================================================
 # Load HF weights
 # ============================================================
+
 
 def load_hf_weights(hf_dir):
     """Load all HF weights from safetensors files."""
@@ -115,6 +128,7 @@ def load_hf_config(hf_dir):
 # ============================================================
 # Convert HF -> Megatron (full, unsharded)
 # ============================================================
+
 
 def is_gdn_layer(idx, freq):
     return (idx % freq) != (freq - 1)
@@ -152,9 +166,7 @@ def merge_gdn_in_proj(qkv, z, b, a, cfg):
     a_g = a.reshape(num_qk_heads, v_per_group, hidden)
 
     # Reorder to TP-rank-grouped layout
-    q, k, v, z, b, a = [
-        w.reshape(tp_size, -1, hidden) for w in [q_g, k_g, v_g, z_g, b_g, a_g]
-    ]
+    q, k, v, z, b, a = [w.reshape(tp_size, -1, hidden) for w in [q_g, k_g, v_g, z_g, b_g, a_g]]
     in_proj = torch.cat([q, k, v, z, b, a], dim=1).reshape(-1, hidden)
     return in_proj
 
@@ -189,7 +201,6 @@ def merge_attention_qkv(q_proj, k_proj, v_proj, cfg):
 
 def convert_llm(hf_sd, meg_sd, cfg):
     """Convert LLM parameters from HF to Megatron naming."""
-    hidden = cfg.hidden_size
     freq = cfg.linear_attention_freq
 
     # Embedding
@@ -207,7 +218,7 @@ def convert_llm(hf_sd, meg_sd, cfg):
             mk = f"{mg_pfx}.self_attention.in_proj.layer_norm_weight"
             hk = f"{hf_pfx}.input_layernorm.weight"
             if hk in hf_sd:
-                meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+                meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
             # in_proj: merge qkv, z, b, a
             mk = f"{mg_pfx}.self_attention.in_proj.weight"
@@ -233,7 +244,7 @@ def convert_llm(hf_sd, meg_sd, cfg):
             mk = f"{mg_pfx}.self_attention.out_norm.weight"
             hk = f"{hf_pfx}.linear_attn.norm.weight"
             if hk in hf_sd:
-                meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+                meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
             # A_log, dt_bias
             for suffix in ["A_log", "dt_bias"]:
@@ -247,7 +258,7 @@ def convert_llm(hf_sd, meg_sd, cfg):
             mk = f"{mg_pfx}.self_attention.linear_qkv.layer_norm_weight"
             hk = f"{hf_pfx}.input_layernorm.weight"
             if hk in hf_sd:
-                meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+                meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
             # QKV merge
             mk = f"{mg_pfx}.self_attention.linear_qkv.weight"
@@ -269,13 +280,13 @@ def convert_llm(hf_sd, meg_sd, cfg):
                 mk = f"{mg_pfx}.self_attention.{suffix}.weight"
                 hk = f"{hf_pfx}.self_attn.{hf_sfx}.weight"
                 if hk in hf_sd:
-                    meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+                    meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
         # --- MLP (same for both layer types) ---
         mk = f"{mg_pfx}.mlp.linear_fc1.layer_norm_weight"
         hk = f"{hf_pfx}.post_attention_layernorm.weight"
         if hk in hf_sd:
-            meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+            meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
         # gate_proj + up_proj -> linear_fc1
         mk = f"{mg_pfx}.mlp.linear_fc1.weight"
@@ -294,7 +305,7 @@ def convert_llm(hf_sd, meg_sd, cfg):
     mk = "language_model.decoder.final_layernorm.weight"
     hk = "model.language_model.norm.weight"
     if hk in hf_sd:
-        meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=LLM_LN_ADJUSTMENT)
+        meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
     # Output layer (only if untied)
     if cfg.untie:
@@ -318,7 +329,11 @@ def convert_vision(hf_sd, meg_sd, cfg):
         hk = f"{hf_pfx}.patch_embed.proj.{s}"
         mk = f"{mg_pfx}.patch_embed.proj.{s}"
         if hk in hf_sd:
-            meg_sd[mk] = hf_sd[hk]
+            val = hf_sd[hk]
+            if s == "weight" and cfg.use_linear_proj:
+                # HF uses nn.Conv3d, Megatron uses nn.Linear: flatten spatial dims
+                val = val.view(cfg.vision_hidden_size, -1)
+            meg_sd[mk] = val
 
     # pos_embed
     hk = f"{hf_pfx}.pos_embed.weight"
@@ -331,19 +346,19 @@ def convert_vision(hf_sd, meg_sd, cfg):
         hf_blk = f"{hf_pfx}.blocks.{i}"
         mg_blk = f"{mg_pfx}.decoder.layers.{i}"
 
-        # norm1 (from linear_qkv layernorm)
+        # norm1 (from linear_qkv layernorm) — vision encoder does NOT use zero-centered gamma
         for s in ["weight", "bias"]:
             hk = f"{hf_blk}.norm1.{s}"
             mk = f"{mg_blk}.self_attention.linear_qkv.layer_norm_{s}"
             if hk in hf_sd:
-                meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=VISION_LN_ADJUSTMENT)
+                meg_sd[mk] = hf_sd[hk]
 
-        # norm2 (from linear_fc1 layernorm)
+        # norm2 (from linear_fc1 layernorm) — vision encoder does NOT use zero-centered gamma
         for s in ["weight", "bias"]:
             hk = f"{hf_blk}.norm2.{s}"
             mk = f"{mg_blk}.mlp.linear_fc1.layer_norm_{s}"
             if hk in hf_sd:
-                meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=VISION_LN_ADJUSTMENT)
+                meg_sd[mk] = hf_sd[hk]
 
         # QKV: HF [3*vis_h, vis_h] -> Megatron [num_qg, 3, head_dim, vis_h]
         hk = f"{hf_blk}.attn.qkv.weight"
@@ -386,21 +401,16 @@ def convert_vision(hf_sd, meg_sd, cfg):
         if hk in hf_sd:
             meg_sd[mk] = hf_sd[hk]
 
-    # Vision final layernorm -> merger norm
+    # Vision final layernorm -> merger norm — vision encoder does NOT use zero-centered gamma
     for s in ["weight", "bias"]:
         hk = f"{hf_pfx}.merger.norm.{s}"
         mk = f"{mg_pfx}.decoder.final_layernorm.{s}"
         if hk in hf_sd:
-            meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=VISION_LN_ADJUSTMENT)
+            meg_sd[mk] = hf_sd[hk]
 
 
 def convert_mtp(hf_sd, meg_sd, cfg):
     """Convert MTP parameters from HF to Megatron."""
-    hidden = cfg.hidden_size
-    num_qg = cfg.num_query_groups
-    kv_ch = cfg.kv_channels
-    heads_per_group = cfg.num_attention_heads // num_qg
-
     # Direct mappings (reverse of meg2hf)
     mtp_direct = {
         "mtp.fc.weight": "language_model.mtp.layers.0.eh_proj.weight",
@@ -416,7 +426,7 @@ def convert_mtp(hf_sd, meg_sd, cfg):
     }
     for hk, mk in mtp_direct.items():
         if hk in hf_sd:
-            meg_sd[mk] = adjust_ln_weight(hf_sd[hk], force=MTP_LN_ADJUSTMENT)
+            meg_sd[mk] = adjust_ln_weight(hf_sd[hk])
 
     # MTP QKV
     mk = "language_model.mtp.layers.0.mtp_model_layer.self_attention.linear_qkv.weight"
@@ -447,14 +457,18 @@ def convert_to_megatron(hf_sd, cfg):
 # Split by PP and TP
 # ============================================================
 
+
 def _find_ref_shard(ref_ckpt_dir, tp_rank, pp_rank):
     """Find reference shard file, supporting both naming conventions and iter subdirs."""
     candidates = [ref_ckpt_dir]
     # If no direct mp_rank found, check for iter_*/ subdirs
-    iter_dirs = sorted([
-        d for d in os.listdir(ref_ckpt_dir)
-        if d.startswith("iter_") and os.path.isdir(os.path.join(ref_ckpt_dir, d))
-    ])
+    iter_dirs = sorted(
+        [
+            d
+            for d in os.listdir(ref_ckpt_dir)
+            if d.startswith("iter_") and os.path.isdir(os.path.join(ref_ckpt_dir, d))
+        ]
+    )
     for d in iter_dirs:
         candidates.append(os.path.join(ref_ckpt_dir, d))
 
@@ -527,7 +541,6 @@ def split_tp(meg_sd, cfg):
     vis_heads = cfg.vision_num_attention_heads
     vis_head_dim = vis_h // vis_heads
     vis_qg = vis_heads
-    vis_gps = vis_qg // tp
 
     # LLM config
     num_qg = cfg.num_query_groups
@@ -537,7 +550,6 @@ def split_tp(meg_sd, cfg):
         total_hpg = 2 * heads_per_group + 2
     else:
         total_hpg = heads_per_group + 2
-    gps = num_qg // tp
 
     for k, v in meg_sd.items():
         if not isinstance(v, torch.Tensor):
@@ -575,7 +587,7 @@ def split_tp(meg_sd, cfg):
                 chunks = viewed.chunk(tp, dim=0)
                 for r in range(tp):
                     shards[r][k] = chunks[r].reshape(-1)
-            elif ("linear_proj.weight" in k or "linear_fc2.weight" in k):
+            elif "linear_proj.weight" in k or "linear_fc2.weight" in k:
                 # RowParallel: split dim 1
                 chunks = v.chunk(tp, dim=1)
                 for r in range(tp):
@@ -698,7 +710,9 @@ def split_pp(meg_sd, cfg):
             layer_idx = int(rest.split(".")[0])
             pp_rank = layer_idx // layers_per_pp
             local_idx = layer_idx % layers_per_pp
-            new_k = parts[0] + "decoder.layers." + str(local_idx) + "." + ".".join(rest.split(".")[1:])
+            new_k = (
+                parts[0] + "decoder.layers." + str(local_idx) + "." + ".".join(rest.split(".")[1:])
+            )
             pp_stages[pp_rank][new_k] = v
         else:
             # Non-layer params: decide which PP stage they belong to
@@ -754,7 +768,7 @@ def add_extra_states(sd):
                 # Get the base prefix (everything up to the pattern)
                 idx = k.find(pattern)
                 if idx >= 0:
-                    base = k[:idx + len(pattern)]
+                    base = k[: idx + len(pattern)]
                     prefixes.add(base)
 
     for base in prefixes:
@@ -768,6 +782,7 @@ def add_extra_states(sd):
 # ============================================================
 # Validate
 # ============================================================
+
 
 def validate(shards_dict, cfg, ref_ckpt_dir):
     """Compare generated shards with reference checkpoint."""
@@ -819,13 +834,19 @@ def validate(shards_dict, cfg, ref_ckpt_dir):
                     if ref_sd[k].shape != gen_sd[k].shape:
                         if "embedding.word_embeddings" in k:
                             emb_mismatch = True
-                            print(f"  Embedding shape differs (expected if not using --adjust-embedding):")
-                            print(f"    ref: {tuple(ref_sd[k].shape)}, gen: {tuple(gen_sd[k].shape)}")
+                            print(
+                                "  Embedding shape differs (expected if not using --adjust-embedding):"
+                            )
+                            print(
+                                f"    ref: {tuple(ref_sd[k].shape)}, gen: {tuple(gen_sd[k].shape)}"
+                            )
                         else:
                             mismatches += 1
                             if mismatches <= 3:
                                 print(f"  Shape mismatch: {k}")
-                                print(f"    ref: {tuple(ref_sd[k].shape)}, gen: {tuple(gen_sd[k].shape)}")
+                                print(
+                                    f"    ref: {tuple(ref_sd[k].shape)}, gen: {tuple(gen_sd[k].shape)}"
+                                )
             if mismatches > 0:
                 print(f"  Total shape mismatches: {mismatches}")
                 all_ok = False
@@ -849,14 +870,23 @@ def validate(shards_dict, cfg, ref_ckpt_dir):
 # Main
 # ============================================================
 
+
 def main():
     args = parse_args()
     cfg = Config(args.yaml)
 
-    print(f"Config: TP={cfg.tp}, PP={cfg.pp}, layers={cfg.num_layers}, "
-          f"hidden={cfg.hidden_size}, ffn={cfg.ffn_hidden_size}")
+    # Apply CLI override for layer norm adjustment
+    global LN_ADJUSTMENT
+    if args.no_adjust_ln:
+        LN_ADJUSTMENT = False
+
+    print(
+        f"Config: TP={cfg.tp}, PP={cfg.pp}, layers={cfg.num_layers}, "
+        f"hidden={cfg.hidden_size}, ffn={cfg.ffn_hidden_size}"
+    )
     print(f"GDN: freq={cfg.linear_attention_freq}, qk_dim={cfg.qk_dim}, v_dim={cfg.v_dim}")
     print(f"Vision: layers={cfg.vision_num_layers}, hidden={cfg.vision_hidden_size}")
+    print(f"LN adjustment: {LN_ADJUSTMENT}")
 
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -913,6 +943,7 @@ def main():
     if args.ref_ckpt_dir:
         success = validate(shards_dict, cfg, args.ref_ckpt_dir)
         import sys
+
         sys.exit(0 if success else 1)
 
 

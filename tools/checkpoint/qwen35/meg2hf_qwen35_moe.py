@@ -19,6 +19,9 @@ import yaml
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+# Layer norm adjustment for zero-centered gamma.
+# Controls LLM and MTP layernorms only. Vision layernorms are never adjusted.
+# By default enabled. Use --no-adjust-ln CLI flag to disable.
 LN_ADJUSTMENT = True
 
 
@@ -29,6 +32,7 @@ def restore_ln_weight(weight):
 # ============================================================
 # Config
 # ============================================================
+
 
 class Config:
     def __init__(self, yaml_path):
@@ -74,15 +78,22 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--yaml", required=True, help="Path to training yaml config")
     p.add_argument("--meg-ckpt-dir", required=True, help="Path to Megatron checkpoint directory")
-    p.add_argument("--hf-ref-dir", default=None,
-                   help="Reference HF model dir for shape validation (optional)")
+    p.add_argument(
+        "--hf-ref-dir", default=None, help="Reference HF model dir for shape validation (optional)"
+    )
     p.add_argument("--save-dir", required=True, help="Output directory for HF checkpoint")
+    p.add_argument(
+        "--no-adjust-ln",
+        action="store_true",
+        help="Disable layer norm adjustment (zero-centered gamma)",
+    )
     return p.parse_args()
 
 
 # ============================================================
 # Load & merge
 # ============================================================
+
 
 def load_shard(ckpt_dir, tp_rank, pp_rank):
     # Try PP suffix format first (TP+PP > 1)
@@ -113,7 +124,6 @@ def merge_tp_shards(shards, cfg):
     vis_h = cfg.vision_hidden_size
     vis_heads = cfg.vision_num_attention_heads
     vis_head_dim = vis_h // vis_heads
-    vis_ffn = cfg.vision_ffn_hidden_size
     vis_qg = vis_heads
     vis_gps = vis_qg // tp
 
@@ -134,7 +144,7 @@ def merge_tp_shards(shards, cfg):
             elif "linear_qkv.bias" in k:
                 viewed = [x.view(vis_gps, -1, vis_head_dim) for x in vals]
                 merged[k] = torch.cat(viewed, dim=0).view(-1)
-            elif ("linear_proj.weight" in k or "linear_fc2.weight" in k):
+            elif "linear_proj.weight" in k or "linear_fc2.weight" in k:
                 merged[k] = torch.cat(vals, dim=1)
             elif "linear_fc1.weight" in k and "projection" not in k:
                 merged[k] = torch.cat(vals, dim=0)
@@ -182,21 +192,29 @@ def merge_tp_shards(shards, cfg):
             q_all, k_all, v_all, z_all, b_all, a_all = [], [], [], [], [], []
             for val in vals:
                 off = 0
-                q_all.append(val[off:off + q_per]); off += q_per
-                k_all.append(val[off:off + k_per]); off += k_per
-                v_all.append(val[off:off + v_per]); off += v_per
-                z_all.append(val[off:off + z_per]); off += z_per
-                b_all.append(val[off:off + b_per]); off += b_per
-                a_all.append(val[off:off + a_per])
+                q_all.append(val[off : off + q_per])
+                off += q_per
+                k_all.append(val[off : off + k_per])
+                off += k_per
+                v_all.append(val[off : off + v_per])
+                off += v_per
+                z_all.append(val[off : off + z_per])
+                off += z_per
+                b_all.append(val[off : off + b_per])
+                off += b_per
+                a_all.append(val[off : off + a_per])
 
-            merged[k] = torch.cat([
-                torch.cat(q_all, dim=0),
-                torch.cat(k_all, dim=0),
-                torch.cat(v_all, dim=0),
-                torch.cat(z_all, dim=0),
-                torch.cat(b_all, dim=0),
-                torch.cat(a_all, dim=0),
-            ], dim=0)
+            merged[k] = torch.cat(
+                [
+                    torch.cat(q_all, dim=0),
+                    torch.cat(k_all, dim=0),
+                    torch.cat(v_all, dim=0),
+                    torch.cat(z_all, dim=0),
+                    torch.cat(b_all, dim=0),
+                    torch.cat(a_all, dim=0),
+                ],
+                dim=0,
+            )
         elif "conv1d.weight" in k:
             merged[k] = torch.cat(vals, dim=0)
         elif "A_log" in k or "dt_bias" in k:
@@ -245,7 +263,13 @@ def merge_pp_stages(pp_merged, cfg):
                 rest = parts[1]
                 local_idx = int(rest.split(".")[0])
                 global_idx = pp_rank * layers_per_pp + local_idx
-                new_k = parts[0] + "decoder.layers." + str(global_idx) + "." + ".".join(rest.split(".")[1:])
+                new_k = (
+                    parts[0]
+                    + "decoder.layers."
+                    + str(global_idx)
+                    + "."
+                    + ".".join(rest.split(".")[1:])
+                )
                 full_sd[new_k] = v
             else:
                 full_sd[k] = v
@@ -257,10 +281,9 @@ def merge_pp_stages(pp_merged, cfg):
 # Convert Megatron -> HF
 # ============================================================
 
+
 def split_gdn_in_proj(in_proj_weight, cfg):
     hidden = cfg.hidden_size
-    qk_dim = cfg.qk_dim
-    v_dim = cfg.v_dim
     num_qk_heads = cfg.linear_num_key_heads
     num_v_heads = cfg.linear_num_value_heads
     qk_head_dim = cfg.linear_key_head_dim
@@ -295,11 +318,14 @@ def split_gdn_in_proj(in_proj_weight, cfg):
     b_g = torch.cat(b_parts, dim=0).reshape(num_qk_heads, v_per_group, hidden)
     a_g = torch.cat(a_parts, dim=0).reshape(num_qk_heads, v_per_group, hidden)
 
-    qkv = torch.cat([
-        q_g.reshape(-1, hidden),
-        k_g.reshape(-1, hidden),
-        v_g.reshape(-1, hidden),
-    ], dim=0)
+    qkv = torch.cat(
+        [
+            q_g.reshape(-1, hidden),
+            k_g.reshape(-1, hidden),
+            v_g.reshape(-1, hidden),
+        ],
+        dim=0,
+    )
     z_flat = z_g.reshape(-1, hidden)
     b_flat = b_g.reshape(-1, hidden)
     a_flat = a_g.reshape(-1, hidden)
@@ -345,7 +371,7 @@ def convert_to_hf(full_sd, cfg):
 
             mk = f"{mg_pfx}.self_attention.out_norm.weight"
             if mk in full_sd:
-                hf_sd[f"{hf_pfx}.linear_attn.norm.weight"] = full_sd[mk]
+                hf_sd[f"{hf_pfx}.linear_attn.norm.weight"] = restore_ln_weight(full_sd[mk])
 
             mk = f"{mg_pfx}.self_attention.A_log"
             if mk in full_sd:
@@ -371,7 +397,7 @@ def convert_to_hf(full_sd, cfg):
                 qkv = full_sd[mk].view(num_qg, total_hpg, kv_ch, hidden)
                 if cfg.attention_output_gate:
                     q_heads = qkv[:, :heads_per_group]
-                    z_heads = qkv[:, heads_per_group:2*heads_per_group]
+                    z_heads = qkv[:, heads_per_group : 2 * heads_per_group]
                     k_heads = qkv[:, -2:-1]
                     v_heads = qkv[:, -1:]
                     q_combined = torch.cat([q_heads, z_heads], dim=1)
@@ -388,7 +414,7 @@ def convert_to_hf(full_sd, cfg):
 
             mk = f"{mg_pfx}.self_attention.q_layernorm.weight"
             if mk in full_sd:
-                hf_sd[f"{hf_pfx}.self_attn.q_norm.weight"] = full_sd[mk]
+                hf_sd[f"{hf_pfx}.self_attn.q_norm.weight"] = restore_ln_weight(full_sd[mk])
             mk = f"{mg_pfx}.self_attention.k_layernorm.weight"
             if mk in full_sd:
                 hf_sd[f"{hf_pfx}.self_attn.k_norm.weight"] = restore_ln_weight(full_sd[mk])
@@ -442,7 +468,7 @@ def convert_to_hf(full_sd, cfg):
     # Final layernorm
     mk = "language_model.decoder.final_layernorm.weight"
     if mk in full_sd:
-        hf_sd["model.language_model.norm.weight"] = full_sd[mk]
+        hf_sd["model.language_model.norm.weight"] = restore_ln_weight(full_sd[mk])
 
     # Output layer
     if cfg.untie:
@@ -559,7 +585,7 @@ def convert_mtp(full_sd, hf_sd, cfg):
         qkv = full_sd[mk].view(num_qg, total_hpg, kv_ch, hidden)
         if cfg.attention_output_gate:
             q_heads = qkv[:, :heads_per_group]
-            z_heads = qkv[:, heads_per_group:2*heads_per_group]
+            z_heads = qkv[:, heads_per_group : 2 * heads_per_group]
             k_heads = qkv[:, -2:-1]
             v_heads = qkv[:, -1:]
             q_combined = torch.cat([q_heads, z_heads], dim=1)
@@ -610,6 +636,7 @@ def convert_mtp(full_sd, hf_sd, cfg):
 # Compare
 # ============================================================
 
+
 def load_hf_shapes(hf_dir):
     if hf_dir is None:
         return None
@@ -633,11 +660,14 @@ def compare_models(hf_sd, ref_shapes, cfg):
     # Keys that are expected to differ (Megatron doesn't have these)
     expected_missing_in_converted = set()
 
-    # HF has 40 layers but Megatron only has cfg.num_layers (16) - layers beyond num_layers are expected missing
+    # If the reference HF model has more layers than the Megatron checkpoint
+    # specified by cfg.num_layers, layers beyond cfg.num_layers are expected
+    # to be missing from the converted output.
     for k in list(ref_shapes.keys()):
         # Match patterns like model.language_model.layers.XX. or mtp.layers.XX.
         import re
-        m = re.search(r'layers\.(\d+)\.', k)
+
+        m = re.search(r"layers\.(\d+)\.", k)
         if m:
             layer_idx = int(m.group(1))
             if layer_idx >= cfg.num_layers:
@@ -678,15 +708,14 @@ def compare_models(hf_sd, ref_shapes, cfg):
             print(f"  {k:80s} shape={list(hf_sd[k].shape)}")
 
     if expected_missing_in_converted:
-        print(f"\n⚠️  Expected missing (Megatron has no equivalent): {len(expected_missing_in_converted)}")
+        print(
+            f"\n⚠️  Expected missing (Megatron has no equivalent): {len(expected_missing_in_converted)}"
+        )
         for k in sorted(expected_missing_in_converted):
             print(f"  {k}")
 
     conv_total = sum(t.numel() for t in hf_sd.values())
-    ref_total = sum(
-        eval("*".join(str(d) for d in shape)) if shape else 1
-        for shape in ref_shapes.values()
-    )
+    ref_total = sum(__import__("math").prod(shape) if shape else 1 for shape in ref_shapes.values())
 
     print(f"\nConverted total params: {conv_total:>15,}")
     print(f"Reference total params: {ref_total:>15,}")
@@ -704,7 +733,9 @@ def compare_models(hf_sd, ref_shapes, cfg):
         print(f"   - All {matched} parameters match")
         print(f"   - Total params: {conv_total:,}")
         if expected_missing_in_converted:
-            print(f"   - {len(expected_missing_in_converted)} params expected to differ (Megatron lacks equivalent)")
+            print(
+                f"   - {len(expected_missing_in_converted)} params expected to differ (Megatron lacks equivalent)"
+            )
         success = True
     print("=" * 100)
 
@@ -715,19 +746,29 @@ def compare_models(hf_sd, ref_shapes, cfg):
 # Main
 # ============================================================
 
+
 def main():
     args = parse_args()
     cfg = Config(args.yaml)
 
-    print(f"Config: TP={cfg.tp}, PP={cfg.pp}, layers={cfg.num_layers}, "
-          f"hidden={cfg.hidden_size}, ffn={cfg.ffn_hidden_size}")
+    # Apply CLI override for layer norm adjustment
+    global LN_ADJUSTMENT
+    if args.no_adjust_ln:
+        LN_ADJUSTMENT = False
+
+    print(
+        f"Config: TP={cfg.tp}, PP={cfg.pp}, layers={cfg.num_layers}, "
+        f"hidden={cfg.hidden_size}, ffn={cfg.ffn_hidden_size}"
+    )
     print(f"MoE: experts={cfg.num_experts}, moe_ffn={cfg.moe_ffn_hidden_size}")
     print(f"GDN: freq={cfg.linear_attention_freq}, qk_dim={cfg.qk_dim}, v_dim={cfg.v_dim}")
+    print(f"LN adjustment: {LN_ADJUSTMENT}")
 
     if cfg.pp > 1:
         print("\n❌ ERROR: PP (Pipeline Parallelism) > 1 is not yet supported.")
         print("   Please set pipeline_model_parallel_size=1 in your yaml config.")
         import sys
+
         sys.exit(1)
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -767,6 +808,7 @@ def main():
         ref_shapes = load_hf_shapes(args.hf_ref_dir)
         success = compare_models(hf_sd, ref_shapes, cfg)
         import sys
+
         sys.exit(0 if success else 1)
     else:
         print("\nConversion complete (no reference provided for validation).")
