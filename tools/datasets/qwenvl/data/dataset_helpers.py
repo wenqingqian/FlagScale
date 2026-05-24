@@ -412,7 +412,7 @@ class TaskEncoder(
                         f"Encode Error: sample id [{sample.__key__}], converd conversation: {conversation}, turn idx: {turn_idx}, turn: {turn}"
                     )
             else:
-                prefix = conversation[:conversation_start_idx + turn_idx + 1]
+                prefix = conversation[: conversation_start_idx + turn_idx + 1]
                 prefix_tokens = self.tokenizer.apply_chat_template(
                     prefix, tokenize=True, return_tensors="np"
                 )[0]
