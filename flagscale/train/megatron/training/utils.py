@@ -48,6 +48,7 @@ from megatron.core.transformer.module import param_is_not_shared
 from megatron.plugin.utils import get_device_type_for_comm
 from megatron.plugin.platform import get_platform
 cur_platform = get_platform()
+from megatron.plugin.decorators import overridable
 
 def calc_params_l2_norm(model, force_create_fp32_copy=False):
     """Calculate l2 norm of parameters"""
@@ -543,6 +544,7 @@ def is_first_or_last_pipeline_stage(vp_stage, dualpipev_stage=None):
     )
 
 
+@overridable
 def get_device_arch_version():
     """Returns GPU arch version (8: Ampere, 9: Hopper, 10: Blackwell, ...)"""
     return cur_platform.get_device_properties(cur_platform.device(0)).major

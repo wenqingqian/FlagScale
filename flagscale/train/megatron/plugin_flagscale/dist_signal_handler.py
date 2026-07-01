@@ -3,6 +3,7 @@ import logging
 import torch
 
 from megatron.plugin.platform import get_platform
+from functools import wraps
 cur_platform = get_platform()
 
 logger = logging.getLogger(__name__)
