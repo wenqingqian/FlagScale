@@ -1,6 +1,6 @@
 #!/bin/bash
-# Unified checkpoint conversion entry point for Qwen3.5 (dense + MoE).
-# Dispatches to convert_qwen35.py with --direction and auto-detected model type.
+# Unified checkpoint conversion entry point for Qwen3.5
+# Dispatches to convert_qwen35.py with --direction.
 #
 # Usage: ./run.sh <direction> [python_args...]
 #
