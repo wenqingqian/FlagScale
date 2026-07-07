@@ -37,12 +37,8 @@ class Config:
         self.ep = cfg.get("expert_model_parallel_size", 1)
 
         # Uneven PP: optional per-stage layer counts
-        self.decoder_first_pipeline_num_layers = cfg.get(
-            "decoder_first_pipeline_num_layers", None
-        )
-        self.decoder_last_pipeline_num_layers = cfg.get(
-            "decoder_last_pipeline_num_layers", None
-        )
+        self.decoder_first_pipeline_num_layers = cfg.get("decoder_first_pipeline_num_layers", None)
+        self.decoder_last_pipeline_num_layers = cfg.get("decoder_last_pipeline_num_layers", None)
 
         self.num_layers = _require(cfg, "num_layers")
         self.hidden_size = _require(cfg, "hidden_size")

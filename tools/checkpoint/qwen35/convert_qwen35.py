@@ -114,16 +114,12 @@ def main():
         if not args.hf_path:
             parser.error("--hf-path is required for hf2meg")
         if not args.meg_path and not args.ref_path:
-            parser.error(
-                "--meg-path is required for hf2meg when --ref-path is not provided"
-            )
+            parser.error("--meg-path is required for hf2meg when --ref-path is not provided")
     else:
         if not args.meg_path:
             parser.error("--meg-path is required for meg2hf")
         if not args.hf_path and not args.ref_path:
-            parser.error(
-                "--hf-path is required for meg2hf when --ref-path is not provided"
-            )
+            parser.error("--hf-path is required for meg2hf when --ref-path is not provided")
 
     # Apply CLI override for layer norm adjustment
     if args.adjust_ln:
