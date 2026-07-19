@@ -278,6 +278,11 @@ from megatron.training import ft_integration
 from megatron.training.global_vars import get_spiky_loss_detector
 from megatron.training.peft import PEFT  # Import PEFT from peft module
 from megatron.plugin.hetero.parallel_context import get_parallel_context
+from flagscale.models.mimo import (
+    build_mimo_optimizer,
+    setup_mimo_ddp,
+    set_mimo_force_all_reduce,
+)
 from flagscale.runner.straggler import (
     OptionalSectionContext,
     StragglerConfig as FSStragglerConfig,
@@ -1818,6 +1823,11 @@ def get_model(
     # After TE2.x: Below function is an empty function and does nothing.
     correct_amax_history_if_needed(model)
 
+    ########## FlagScale Begin ##########
+    if wrap_with_ddp and args.use_mimo:
+        wrap_with_ddp = False
+    ########## FlagScale End ##########
+
     if wrap_with_ddp:
         if args.use_torch_fsdp2:
             assert HAVE_FSDP2, "Torch FSDP2 requires torch>=2.4.0"
@@ -2033,6 +2043,18 @@ def setup_model_and_optimizer(
     one_logger and one_logger.log_metrics(
         {"app_build_optimzer_start_time": one_logger_utils.get_timestamp_in_ms()}
     )
+    ########## FlagScale Begin ##########
+    is_mimo = setup_mimo_ddp(model, args, wrap_with_ddp)
+    mimo_model = None
+    if is_mimo:
+        unwrapped_model = unwrap_model(model)
+        mimo_model = (
+            unwrapped_model[0]
+            if isinstance(unwrapped_model, list) and len(unwrapped_model) == 1
+            else (unwrapped_model if not isinstance(unwrapped_model, list) else None)
+        )
+    ########## FlagScale End ##########
+
     if skip_optimizer:
         optimizer, opt_param_scheduler = None, None
         # In RL inference-only mode, train_iters must still be set despite having no optimizer.
@@ -2062,17 +2084,22 @@ def setup_model_and_optimizer(
             if mup_overrides:
                 config_overrides = {**(config_overrides or {}), **mup_overrides}
 
-        if "muon" not in config.optimizer:
-            # If the user is asking for a non-zero embedding init std, skip weight decay for embeddings
-            # to avoid embeddings from shrinking to zero as recommended in https://arxiv.org/abs/2312.16903
-            # default_skip_embedding_weight_decay=args.embedding_init_method_std is not None,
-            optimizer = get_megatron_optimizer(
-                config,
-                model,
-                config_overrides=config_overrides,
-                use_gloo_process_groups=args.use_gloo_process_groups,
-                dump_param_to_param_group_map=args.dump_param_to_param_group_map,
-            )
+        if 'muon' not in config.optimizer:
+            if is_mimo:
+                optimizer = build_mimo_optimizer(
+                    config, config_overrides, mimo_model, args
+                )
+            else:
+                # If the user is asking for a non-zero embedding init std, skip weight decay for embeddings
+                # to avoid embeddings from shrinking to zero as recommended in https://arxiv.org/abs/2312.16903
+                # default_skip_embedding_weight_decay=args.embedding_init_method_std is not None,
+                optimizer = get_megatron_optimizer(
+                    config,
+                    model,
+                    config_overrides=config_overrides,
+                    use_gloo_process_groups=args.use_gloo_process_groups,
+                    dump_param_to_param_group_map=args.dump_param_to_param_group_map,
+                )
         else:
             optimizer = get_megatron_muon_optimizer(
                 config,
@@ -2240,12 +2267,24 @@ def train_step(
     save_wgrads_in_this_iteration = (
         args.save_wgrads_interval is not None and (iteration + 1) % args.save_wgrads_interval == 0
     )
+    
+    ########## FlagScale Begin ##########
+    def _zero_grad_buffer(model_chunk):
+        """Zero the grad buffer."""
+        if hasattr(model_chunk, 'zero_grad_buffer'):
+            model_chunk.zero_grad_buffer()
+    ########## FlagScale End ##########
+
     while rerun_state_machine.should_run_forward_backward(data_iterator):
         # Set grad to zero.
         for model_chunk in model:
-            model_chunk.zero_grad_buffer()
+            _zero_grad_buffer(model_chunk)
             # If saving main_grads in this iteration, then all-reduce instead of reduce-scatter.
             model_chunk.force_all_reduce = save_wgrads_in_this_iteration
+            ########## FlagScale Begin ##########
+            if args.use_mimo:
+                set_mimo_force_all_reduce(model_chunk, save_wgrads_in_this_iteration)
+            ########## FlagScale End ##########
         optimizer.zero_grad()
 
         if has_nvidia_modelopt:
@@ -2304,6 +2343,10 @@ def train_step(
         # Reset force_all_reduce field.
         for model_chunk in model:
             model_chunk.force_all_reduce = False
+            ########## FlagScale Begin ##########
+            if args.use_mimo:
+                set_mimo_force_all_reduce(model_chunk, False)
+            ########## FlagScale End ##########
 
     # Checkpoint main_grads.
     if save_wgrads_in_this_iteration:
