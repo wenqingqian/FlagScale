@@ -104,7 +104,10 @@ class _ModuleParallelContext:
                 "CP > 1 is not supported in colocated MIMO yet"
             )
             return self.pg_collection.tp_dp_cp
-        return self.pg_collection.tp_dp
+        # CP=1: the model-parallel group doubles as the tensor+data group.
+        # (tp_dp is not a ProcessGroupCollection field; do not attach it
+        # dynamically — use the mp field as the alias.)
+        return self.pg_collection.mp
 
     def get_tensor_and_context_parallel_group(self, check_initialized=True):
         assert self._group_size(self.pg_collection.tp_cp) == 1, (

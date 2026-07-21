@@ -17,7 +17,6 @@ from flagscale.models.mimo import switch_parallel_state
 from flagscale.models.mimo.mimo_bridge import (
     get_source_vision_rank,
     broadcast_to_language_tp,
-    reduce_visual_grad_from_language_tp,
 )
 from flagscale.models.mimo.mimo_scheduler import (
     MIMOMicrobatchScheduler,
@@ -179,14 +178,35 @@ class Qwen35MIMOModel(MegatronModule):
     # ------------------------------------------------------------------
     # Scheduler callbacks: run ViT on a macro batch and back-propagate later.
     # ------------------------------------------------------------------
+    def _my_microbatch_range(self, num_micro: int) -> tuple[int, int]:
+        """Return this rank's ``[lo, hi)`` microbatch slice within the macro batch.
+
+        The language TP group splits the macro batch into whole microbatches:
+        TP rank j owns ``[j*num/tp, (j+1)*num/tp)``.  Each rank's ViT forward
+        therefore covers exactly ``vision_micro_batch_size`` samples (vbs) and
+        the TP group jointly covers the ``vbf * mbs`` samples of one entity's
+        macro batch — no duplicated ViT compute within the group.
+        """
+        tp_size = max(1, dist.get_world_size(self.language_pg.tp))
+        assert num_micro % tp_size == 0, (
+            f"vit_batch_factor ({num_micro}) must be divisible by language TP size "
+            f"({tp_size}) so each TP rank owns whole microbatches"
+        )
+        per_rank = num_micro // tp_size
+        tp_rank = dist.get_rank(self.language_pg.tp) if tp_size > 1 else 0
+        lo = tp_rank * per_rank
+        return lo, lo + per_rank
+
     def _vision_forward_fn(self, batches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Run one ViT forward over ``vit_batch_factor`` microbatches.
+        """Run one ViT forward over this rank's slice of the macro batch.
 
         ``batches`` is a list of dictionaries returned by the training loop's
-        ``get_batch``.  We concatenate visual inputs, run the vision model under
-        the vision parallel context, reshard outputs to the language TP layout,
-        split them back into per-microbatch chunks, and broadcast each chunk
-        inside the target language TP group.
+        ``get_batch``.  This rank concatenates the visual inputs of its own
+        microbatch slice only (see ``_my_microbatch_range``), runs the vision
+        model under the vision parallel context, splits the output back into
+        per-microbatch chunks, and exchanges chunks inside the language TP
+        group so every rank holds the full macro batch's outputs (its own
+        slice computed, the rest received from their owner ranks).
         """
         if not self.pre_process or not self.add_encoder or self.vision_model is None:
             return [{"vision_embeds": None, "deepstack_features": None} for _ in batches]
@@ -219,27 +239,32 @@ class Qwen35MIMOModel(MegatronModule):
         per_batch_imgs_videos = [_cat_imgs_videos(b) for b in batches]
         per_batch_grids = [_cat_grids(b) for b in batches]
 
-        valid_imgs_videos = [t for t in per_batch_imgs_videos if t is not None]
-        valid_grids = [t for t in per_batch_grids if t is not None]
-
-        if not valid_grids:
+        if not any(t is not None for t in per_batch_grids):
             return [{"vision_embeds": None, "deepstack_features": None} for _ in batches]
 
-        vision_data = torch.cat(valid_imgs_videos, dim=0)
-        vision_grid_thw = torch.cat(valid_grids, dim=0)
+        # Each rank computes only its own slice of the macro batch; the TP
+        # group jointly covers all microbatches (see _my_microbatch_range).
+        lo, hi = self._my_microbatch_range(len(batches))
+        my_imgs_videos = [t for t in per_batch_imgs_videos[lo:hi] if t is not None]
+        my_grids = [t for t in per_batch_grids[lo:hi] if t is not None]
 
-        with switch_parallel_state(self.vision_pg):
-            if vision_grid_thw.shape[0] == 0:
-                macro_embeds = None
-                macro_deepstack = None
-            else:
-                macro_embeds, macro_deepstack = self.vision_model(
-                    vision_data=vision_data,
-                    grid_thw=vision_grid_thw,
-                )
+        if my_grids:
+            vision_data = torch.cat(my_imgs_videos, dim=0)
+            vision_grid_thw = torch.cat(my_grids, dim=0)
+            with switch_parallel_state(self.vision_pg):
+                if vision_grid_thw.shape[0] == 0:
+                    macro_embeds = None
+                    macro_deepstack = None
+                else:
+                    macro_embeds, macro_deepstack = self.vision_model(
+                        vision_data=vision_data,
+                        grid_thw=vision_grid_thw,
+                    )
+        else:
+            macro_embeds = None
+            macro_deepstack = None
 
-        # Vision outputs are full [T, H] on every ViT TP rank; keep them full
-        # and only broadcast inside the target language TP group.
+        # This rank's macro output covers only its own slice of the macro batch.
         self._macro_vision_embeds = macro_embeds
         self._macro_deepstack_features = macro_deepstack
 
@@ -248,10 +273,53 @@ class Qwen35MIMOModel(MegatronModule):
         token_counts = compute_microbatch_token_counts(
             per_batch_grids, merge_unit=spatial_merge_unit
         )
-        split_outputs = split_visual_embeds(macro_embeds, macro_deepstack, token_counts, dim=0)
 
-        # Broadcast each microbatch's visual embeds inside its language TP group.
-        # Source rank cycles through the ViT ranks that overlap this language DP replica.
+        # Assemble the full per-microbatch output list: entries in this rank's
+        # own slice hold locally computed tensors; other entries are empty
+        # buffers that the broadcast below fills from their owner ranks.
+        hidden_size = self.config.hidden_size
+        dtype = macro_embeds.dtype if macro_embeds is not None else self.config.params_dtype
+        device = torch.cuda.current_device()
+        if macro_deepstack is not None:
+            deepstack_levels = len(macro_deepstack)
+        else:
+            deepstack_levels = len(
+                getattr(self.vision_model.config, "deepstack_visual_indexes", None) or []
+            )
+
+        def _empty_entry(n_tokens: int) -> Dict[str, Any]:
+            entry = {
+                "vision_embeds": torch.empty(n_tokens, hidden_size, dtype=dtype, device=device),
+                "deepstack_features": None,
+            }
+            if deepstack_levels > 0:
+                entry["deepstack_features"] = [
+                    torch.empty(n_tokens, hidden_size, dtype=dtype, device=device)
+                    for _ in range(deepstack_levels)
+                ]
+            return entry
+
+        if macro_embeds is not None:
+            my_outputs = split_visual_embeds(
+                macro_embeds, macro_deepstack, token_counts[lo:hi], dim=0
+            )
+        else:
+            # This rank's slice has no visual data; zero-token entries keep the
+            # broadcast below collective-consistent with the other slices.
+            my_outputs = [_empty_entry(0) for _ in range(lo, hi)]
+
+        split_outputs = []
+        my_idx = 0
+        for i in range(len(batches)):
+            if lo <= i < hi:
+                split_outputs.append(my_outputs[my_idx])
+                my_idx += 1
+            else:
+                split_outputs.append(_empty_entry(token_counts[i]))
+
+        # Broadcast each microbatch's visual embeds inside its language TP
+        # group.  The source rank is the owner that actually computed the
+        # slice this microbatch belongs to.
         for forward_idx, output in enumerate(split_outputs):
             src_rank = get_source_vision_rank(self.language_pg, forward_idx, self.vit_batch_factor)
             if output["vision_embeds"] is not None:
@@ -264,15 +332,32 @@ class Qwen35MIMOModel(MegatronModule):
                     for f in output["deepstack_features"]
                 ]
 
+        # Received buffers must require grad so that every served tensor
+        # registers a grad hook — the scheduler's macro-batch completion
+        # trigger relies on a hook firing for *every* microbatch.  Set after
+        # the broadcast to avoid in-place writes into requires-grad leaves.
+        # Grads captured for microbatches this rank does not own are unused.
+        for output in split_outputs:
+            if output["vision_embeds"] is not None:
+                output["vision_embeds"].requires_grad_(True)
+            if output["deepstack_features"] is not None:
+                for f in output["deepstack_features"]:
+                    f.requires_grad_(True)
+
         return split_outputs
 
     def _vision_backward_fn(self, gradients: List[Dict[str, Any]]) -> None:
         """Run ViT backward after all microbatch gradients are collected.
 
-        Gradients live on detached visual tensors, so we manually concatenate
-        them and invoke ``.backward()`` on the original ViT outputs.  Each
-        microbatch gradient is first reduced to its source rank and then
-        gathered so every rank holds the full gradient for its own ViT shard.
+        Each rank's captured gradient for a microbatch is already the complete
+        dL/d(vision_embeds): the LM's TP boundary collectives (all-reduce, or
+        all-gather for sequence parallel) aggregate input gradients before they
+        reach the embedding injection point, so every language TP peer holds an
+        identical copy (verified by instrumentation: peers' captured grads are
+        bitwise identical).  No reduce/broadcast is needed — each rank simply
+        backwards the gradients of its own microbatch slice through its own
+        ViT forward, and vision DDP then averages parameter gradients over
+        disjoint slices (equivalent to averaging over the full global batch).
         """
         if not self.pre_process or not self.add_encoder or self.vision_model is None:
             return
@@ -282,45 +367,23 @@ class Qwen35MIMOModel(MegatronModule):
         if macro_embeds is None:
             return
 
-        num_chunks = len(gradients)
-        source_ranks = [
-            get_source_vision_rank(self.language_pg, i, self.vit_batch_factor)
-            for i in range(num_chunks)
-        ]
-
-        # The current gradient assembly gathers the full macro gradient on every
-        # rank.  This is correct only when the vision module is not tensor-parallel
-        # (TP=1); with vision TP > 1 each rank only needs its own gradient shard.
         assert dist.get_world_size(self.vision_pg.tp) == 1, (
-            "vision gradient assembly assumes vision TP=1; TP > 1 requires "
-            "shard-aware reduce/gather instead of full gradient broadcast"
+            "MIMO vision backward currently supports vision TP=1 only; got "
+            f"{dist.get_world_size(self.vision_pg.tp)}."
         )
 
-        def _assemble_full_grad(key: str) -> torch.Tensor:
-            # Microbatches without visual data contribute ``None`` gradient dicts.
-            # Skip them; their token count is zero so the concatenated gradient
-            # still matches the original macro output.
-            items = [
-                (g[key], src)
-                for g, src in zip(gradients, source_ranks)
-                if g is not None and key in g
-            ]
-            if not items:
-                return None
-            chunks, ranks = zip(*items)
-            reduced = [
-                reduce_visual_grad_from_language_tp(chunk, self.language_pg, src)
-                for chunk, src in zip(chunks, ranks)
-            ]
-            gathered = [
-                broadcast_to_language_tp(chunk, self.language_pg, src)
-                for chunk, src in zip(reduced, ranks)
-            ]
-            return concatenate_visual_grads(
-                [{key: g} for g in gathered], key=key, dim=0
-            )
+        lo, hi = self._my_microbatch_range(len(gradients))
+        my_gradients = gradients[lo:hi]
 
-        embed_grad = _assemble_full_grad("vision_embeds")
+        def _assemble_slice_grad(key: str) -> torch.Tensor:
+            # Microbatches without visual data contribute ``None`` gradient
+            # dicts; skip them so the concatenated gradient matches this
+            # rank's slice of the macro output.
+            if not any(g is not None and key in g for g in my_gradients):
+                return None
+            return concatenate_visual_grads(my_gradients, key=key, dim=0)
+
+        embed_grad = _assemble_slice_grad("vision_embeds")
         if embed_grad is None:
             return
 
@@ -332,7 +395,7 @@ class Qwen35MIMOModel(MegatronModule):
         grads = [_to_vit_dtype(embed_grad)]
         if macro_deepstack is not None:
             for i in range(len(macro_deepstack)):
-                grads.append(_to_vit_dtype(_assemble_full_grad(f"deepstack_{i}")))
+                grads.append(_to_vit_dtype(_assemble_slice_grad(f"deepstack_{i}")))
 
         targets = [macro_embeds] + (macro_deepstack or [])
         with switch_parallel_state(self.vision_pg):
