@@ -99,7 +99,7 @@ def wrap_mimo_ddp(mimo_model, args) -> None:
         with switch_parallel_state(mimo_model.vision_pg):
             vision_dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
             vision_ddp_config = build_mimo_ddp_config(
-                args, mimo_model, dp_world_size=vision_dp_size
+                args, mimo_model.vision_model, dp_world_size=vision_dp_size
             )
             mimo_model.vision_ddp = DDP(
                 config=mimo_model.vision_model.config,
@@ -110,7 +110,7 @@ def wrap_mimo_ddp(mimo_model, args) -> None:
     with switch_parallel_state(mimo_model.language_pg):
         language_dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
         language_ddp_config = build_mimo_ddp_config(
-            args, mimo_model, dp_world_size=language_dp_size
+            args, mimo_model.language_model, dp_world_size=language_dp_size
         )
         mimo_model.language_ddp = DDP(
             config=mimo_model.language_model.config,
@@ -184,8 +184,9 @@ def patch_mimo_model_chunk(model_chunk):
 def setup_mimo_ddp(model, args, wrap_with_ddp: bool = True):
     """Wrap MIMO submodules with per-module DDP and patch the outer wrapper.
 
-    Returns True if ``model`` is a colocated MIMO model and the DDP setup was
-    performed, otherwise False.
+    Returns ``(is_mimo, mimo_model)``: whether ``model`` is a colocated MIMO
+    model whose DDP setup was performed, and the unwrapped MIMO model
+    (``None`` when not MIMO).
     """
     unwrapped_model = unwrap_model(model)
     mimo_model = (
@@ -200,7 +201,7 @@ def setup_mimo_ddp(model, args, wrap_with_ddp: bool = True):
         and hasattr(mimo_model, "vision_pg")
     )
     if not is_mimo:
-        return False
+        return False, None
 
     assert args.context_parallel_size == 1 and args.pipeline_model_parallel_size == 1, (
         "Colocated MIMO currently requires CP=1 and PP=1."
@@ -218,7 +219,7 @@ def setup_mimo_ddp(model, args, wrap_with_ddp: bool = True):
     wrap_mimo_ddp(mimo_model, args)
     for model_chunk in model:
         patch_mimo_model_chunk(model_chunk)
-    return True
+    return True, mimo_model
 
 
 def set_mimo_force_all_reduce(model_chunk, value: bool):

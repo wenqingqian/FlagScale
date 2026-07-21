@@ -2044,15 +2044,7 @@ def setup_model_and_optimizer(
         {"app_build_optimzer_start_time": one_logger_utils.get_timestamp_in_ms()}
     )
     ########## FlagScale Begin ##########
-    is_mimo = setup_mimo_ddp(model, args, wrap_with_ddp)
-    mimo_model = None
-    if is_mimo:
-        unwrapped_model = unwrap_model(model)
-        mimo_model = (
-            unwrapped_model[0]
-            if isinstance(unwrapped_model, list) and len(unwrapped_model) == 1
-            else (unwrapped_model if not isinstance(unwrapped_model, list) else None)
-        )
+    is_mimo, mimo_model = setup_mimo_ddp(model, args, wrap_with_ddp)
     ########## FlagScale End ##########
 
     if skip_optimizer:

@@ -163,7 +163,6 @@ def _create_module_pg_collection(
     pg_collection.dp_cp = pg_collection.dp
     pg_collection.intra_dp_cp = pg_collection.dp
     pg_collection.tp_dp_cp = pg_collection.mp
-    pg_collection.tp_dp = pg_collection.mp
 
     # 8. Distributed-optimizer groups: map model-parallel to intra and
     # data-parallel to inter, matching Megatron-LM-FL expectations.

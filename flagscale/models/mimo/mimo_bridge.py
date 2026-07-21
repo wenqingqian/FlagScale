@@ -15,24 +15,26 @@ def _get_language_tp_first_global_rank(language_pg):
     """Return the global rank of the first member of the language TP group."""
     if language_pg is None or language_pg.tp is None:
         return dist.get_rank()
-    local_tp_rank = dist.get_rank(language_pg.tp)
-    return dist.get_rank() - local_tp_rank
+    # Query group membership instead of assuming contiguous TP ranks.
+    return dist.get_process_group_ranks(language_pg.tp)[0]
 
 
 def get_source_vision_rank(language_pg, forward_idx_in_round, vit_batch_factor):
-    """Pick the ViT rank that supplies visual embeds for this LLM forward.
+    """Return the owner ViT rank of the given forward's microbatch slice.
 
     Within a language TP group, every member is also a ViT rank because vision
-    TP size is 1.  We cycle through those members so that each forward receives
-    data from a source that actually belongs to the same language TP group.
+    TP size is 1.  The group's macro batch is split into whole microbatches
+    (see ``Qwen35MIMOModel._my_microbatch_range``): TP member j computes and
+    supplies the microbatches in its slice, so this mapping is the actual data
+    ownership, not a load-balancing choice.
 
     Example (world size 8, language TP=2, vit_batch_factor=2):
       - language TP group {2, 3} has ViT ranks 2 and 3.
-      - forward 0 in the round uses ViT rank 2; forward 1 uses ViT rank 3.
+      - forward 0 in the round belongs to ViT rank 2; forward 1 to ViT rank 3.
 
     Example (language TP=2, vit_batch_factor=4):
-      - Each ViT rank holds enough samples for two LLM forwards.
-      - forwards 0,1 use rank 2; forwards 2,3 use rank 3.
+      - Each ViT rank owns enough samples for two LLM forwards.
+      - forwards 0,1 belong to rank 2; forwards 2,3 to rank 3.
     """
     assert forward_idx_in_round >= 0, (
         f"forward_idx_in_round must be non-negative, got {forward_idx_in_round}"
