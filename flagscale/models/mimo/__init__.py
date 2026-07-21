@@ -3,7 +3,14 @@
 """Generic MIMO building blocks for colocated deployment."""
 
 from .hetero_pg_utils import build_colocated_pg_collections
+from .mimo_bridge import (
+    broadcast_to_language_tp,
+    exchange_macro_outputs,
+    get_my_microbatch_range,
+    get_source_vision_rank,
+)
 from .mimo_config import MIMOParallelismConfig, ModuleParallelismConfig
+from .mimo_model import ColocatedMIMOModel
 from .mimo_optimizer import (
     ChainedOptimizer,
     build_mimo_ddp_config,
@@ -25,6 +32,11 @@ __all__ = [
     "switch_parallel_state",
     "reshard_between_tp",
     "MIMOMicrobatchScheduler",
+    "ColocatedMIMOModel",
+    "get_source_vision_rank",
+    "get_my_microbatch_range",
+    "broadcast_to_language_tp",
+    "exchange_macro_outputs",
     "build_mimo_ddp_config",
     "wrap_mimo_ddp",
     "ChainedOptimizer",

@@ -131,14 +131,13 @@ class MIMOMicrobatchScheduler:
     # ------------------------------------------------------------------
     # Gradient collection.
     # ------------------------------------------------------------------
-    def register_visual_grad_hook(
-        self, tensor: torch.Tensor, key: str = "vision_embeds"
-    ) -> torch.Tensor:
+    def register_visual_grad_hook(self, tensor: torch.Tensor, key: str) -> torch.Tensor:
         """Detach ``tensor`` and register a hook that collects its gradient.
 
-        The returned tensor is safe to feed into the language model: its
-        gradient will be captured by the scheduler instead of propagating back
-        into the ViT graph.
+        ``key`` names the gradient slot (canonical keys are ``"main"`` and
+        ``"aux_{i}"``, assigned by the model wrapper).  The returned tensor is
+        safe to feed into the language model: its gradient will be captured by
+        the scheduler instead of propagating back into the ViT graph.
         """
         if tensor is None:
             return None
@@ -251,50 +250,52 @@ def compute_microbatch_token_counts(
 
 
 def split_visual_embeds(
-    vision_embeds: torch.Tensor,
-    deepstack_features: list[torch.Tensor] | None,
+    main_embeds: torch.Tensor,
+    aux_features: list[torch.Tensor] | None,
     token_counts: list[int],
     dim: int = 0,
 ) -> list[dict[str, Any]]:
     """Split a macro visual tensor into per-microbatch chunks.
 
     Args:
-        vision_embeds: Concatenated visual embeddings.
-        deepstack_features: Optional list of deepstack tensors with the same
-            token layout as ``vision_embeds``.
+        main_embeds: Concatenated visual embeddings.
+        aux_features: Optional list of auxiliary (deepstack-like) tensors with
+            the same token layout as ``main_embeds``.
         token_counts: Token count for each microbatch.
         dim: Dimension along which tokens are concatenated.
 
     Returns:
-        List of dicts with ``vision_embeds`` and ``deepstack_features`` keys.
+        List of dicts with the canonical layout ``{"main", "aux"}``.
     """
-    if vision_embeds is None:
+    if main_embeds is None:
         return []
 
-    embed_splits = torch.split(vision_embeds, token_counts, dim=dim)
-    deep_splits = None
-    if deepstack_features is not None:
-        deep_splits = [torch.split(f, token_counts, dim=dim) for f in deepstack_features]
+    embed_splits = torch.split(main_embeds, token_counts, dim=dim)
+    aux_splits = None
+    if aux_features is not None:
+        aux_splits = [torch.split(f, token_counts, dim=dim) for f in aux_features]
 
     outputs = []
     for i in range(len(token_counts)):
-        out: dict[str, Any] = {"vision_embeds": embed_splits[i].contiguous()}
-        if deep_splits is not None:
-            out["deepstack_features"] = [d[i].contiguous() for d in deep_splits]
+        out: dict[str, Any] = {"main": embed_splits[i].contiguous()}
+        if aux_splits is not None:
+            out["aux"] = [d[i].contiguous() for d in aux_splits]
         else:
-            out["deepstack_features"] = None
+            out["aux"] = None
         outputs.append(out)
     return outputs
 
 
 def concatenate_visual_grads(
     gradients: list[dict[str, Any] | None],
-    key: str = "vision_embeds",
+    key: str,
     dim: int = 0,
 ) -> torch.Tensor:
     """Concatenate per-microbatch gradients back into a macro gradient.
 
-    ``None`` entries (microbatches without visual data) are skipped.
+    ``key`` names the gradient slot (canonical keys are ``"main"`` and
+    ``"aux_{i}"``).  ``None`` entries (microbatches without visual data) are
+    skipped.
     """
     grads = [g[key] for g in gradients if g is not None and key in g]
     if not grads:
