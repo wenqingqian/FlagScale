@@ -90,6 +90,7 @@ from flagscale.models.megatron.qwen3_vl.layer_specs import get_qwen3vl_vision_mo
 from flagscale.models.mimo import (
     ModuleParallelismConfig,
     build_colocated_pg_collections,
+    compute_vit_batch_factor,
 )
 
 from megatron.plugin.platform import get_platform
@@ -175,27 +176,18 @@ def model_provider(
         print_rank_0(f"MIMO process group collections: {pg_summary}")
 
         vision_micro_batch_size = getattr(args, "vision_micro_batch_size", args.micro_batch_size)
-        vision_samples = vision_parallelism.data_parallel_size * vision_micro_batch_size
-        language_samples = language_parallelism.data_parallel_size * args.micro_batch_size
-        # Reject silent floor-division truncation (e.g. 16 // 12) that would
-        # silently drop vision_micro_batch_size back to the direct path.
-        assert vision_samples % language_samples == 0, (
-            f"vision_dp * vision_micro_batch_size ({vision_samples}) must be a multiple of "
-            f"language_dp * micro_batch_size ({language_samples}). "
-            f"Adjust vision_micro_batch_size or micro_batch_size."
-        )
-        vit_batch_factor = vision_samples // language_samples
-        num_microbatches = get_num_microbatches()
-        assert num_microbatches % vit_batch_factor == 0, (
-            f"num_microbatches ({num_microbatches}) must be a multiple of "
-            f"vit_batch_factor ({vit_batch_factor}) for MIMO correctness. "
-            f"Adjust global_batch_size, micro_batch_size, or vision_micro_batch_size."
+        vit_batch_factor = compute_vit_batch_factor(
+            vision_data_parallel_size=vision_parallelism.data_parallel_size,
+            vision_micro_batch_size=vision_micro_batch_size,
+            language_data_parallel_size=language_parallelism.data_parallel_size,
+            language_micro_batch_size=args.micro_batch_size,
+            num_microbatches=get_num_microbatches(),
         )
         print_rank_0(
             f"MIMO vit_batch_factor={vit_batch_factor} "
             f"(vision_dp={vision_parallelism.data_parallel_size}, "
             f"language_dp={language_parallelism.data_parallel_size}, "
-            f"num_microbatches={num_microbatches})"
+            f"num_microbatches={get_num_microbatches()})"
         )
 
         model = Qwen35MIMOModel(
