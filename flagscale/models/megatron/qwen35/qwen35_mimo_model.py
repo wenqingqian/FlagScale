@@ -63,6 +63,7 @@ class Qwen35MIMOModel(ColocatedMIMOModel):
         pg_collections: Dict[str, object],
         vision_parallelism,
         language_parallelism,
+        vit_batch_factor: int,
         vision_projection_type: str = "mlp",
         parallel_output: bool = True,
         language_position_embedding_type: str = "mrope",
@@ -75,7 +76,6 @@ class Qwen35MIMOModel(ColocatedMIMOModel):
         fp16_lm_cross_entropy: bool = False,
         language_share_embeddings_and_output_weights: bool = False,
         mtp_block_spec=None,
-        vit_batch_factor: int = 1,
         use_fp32_grad_cache: bool = False,
     ) -> None:
         super().__init__(
@@ -199,32 +199,17 @@ class Qwen35MIMOModel(ColocatedMIMOModel):
             raise NotImplementedError()
 
         if self.pre_process and self.add_encoder:
-            if vision_output is not None:
-                # Scheduler path: caller already advanced the scheduler.
-                pass
-            elif self.use_scheduler:
+            if vision_output is None:
                 # Model-internal advance: a caller prepared the macro batch but
                 # left advancing to the model (not used by forward_step, which
                 # needs the batch up front and therefore advances externally).
                 _, _, vision_output = self.scheduler.advance()
-            else:
-                # Direct path (vit_batch_factor == 1, e.g. vision_micro_batch_size
-                # == language micro batch or vision TP == language TP): run ViT
-                # for this single microbatch.
-                vision_embeds, deepstack_feature_lists = self._direct_vision_forward(
-                    (vision_data, vision_grid_thw) if vision_grid_thw is not None else None
-                )
-                vision_output = {"main": vision_embeds, "aux": deepstack_feature_lists}
 
             # Detach visual tensors from the ViT graph and capture gradients
-            # for the delayed ViT backward when the scheduler is active.
-            if self.use_scheduler:
-                vision_embeds, deepstack_feature_lists = self._register_vision_output_hooks(
-                    vision_output
-                )
-            else:
-                vision_embeds = vision_output["main"]
-                deepstack_feature_lists = vision_output["aux"]
+            # for the delayed ViT backward.
+            vision_embeds, deepstack_feature_lists = self._register_vision_output_hooks(
+                vision_output
+            )
 
             if inference_params is not None:
                 raise NotImplementedError()

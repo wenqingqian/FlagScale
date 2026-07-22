@@ -20,12 +20,7 @@ import torch.distributed as dist
 
 from megatron.core.transformer import MegatronModule
 
-from .mimo_bridge import (
-    broadcast_to_language_tp,
-    exchange_macro_outputs,
-    get_my_microbatch_range,
-    get_source_vision_rank,
-)
+from .mimo_bridge import exchange_macro_outputs, get_my_microbatch_range
 from .mimo_scheduler import (
     MIMOMicrobatchScheduler,
     concatenate_visual_grads,
@@ -47,7 +42,7 @@ class ColocatedMIMOModel(MegatronModule):
         self,
         config,
         pg_collections: dict[str, object],
-        vit_batch_factor: int = 1,
+        vit_batch_factor: int,
         use_fp32_grad_cache: bool = False,
     ) -> None:
         super().__init__(config=config)
@@ -61,8 +56,9 @@ class ColocatedMIMOModel(MegatronModule):
         self.vision_model = None
         self.language_model = None
 
-        self.vit_batch_factor = max(1, vit_batch_factor)
-        self.use_scheduler = self.vit_batch_factor > 1
+        # Must come from validate_mimo_config (vbf > 1, CONSTRAINTS.md C2);
+        # config constraints are validated once at the training entry, not here.
+        self.vit_batch_factor = vit_batch_factor
         self.scheduler = MIMOMicrobatchScheduler(
             vit_batch_factor=self.vit_batch_factor,
             vision_forward_fn=self._vision_forward_fn,
@@ -131,7 +127,6 @@ class ColocatedMIMOModel(MegatronModule):
         the loss closure from it), which is why the advance cannot happen
         inside ``forward``.
         """
-        assert self.use_scheduler, "next_microbatch is only valid when the scheduler is on"
         if self.scheduler.need_new_macro_batch():
             self.scheduler.prepare_macro_batch(get_batch_fn, data_iterator, self)
         _, batch, vision_output = self.scheduler.advance()
@@ -309,23 +304,4 @@ class ColocatedMIMOModel(MegatronModule):
             aux = [
                 self.scheduler.register_visual_grad_hook(f, f"aux_{i}") for i, f in enumerate(aux)
             ]
-        return main, aux
-
-    def _direct_vision_forward(self, vision_inputs):
-        """Direct path (vbf=1): run ViT for one microbatch and share the output.
-
-        Vision outputs are full [T, H] tensors on every ViT TP rank.  Broadcast
-        them inside the language TP group so every language rank sees the same
-        embeddings, matching the baseline behaviour where the embedding layer
-        consumes full tensors.
-        """
-        main, aux = None, None
-        if vision_inputs is not None:
-            with switch_parallel_state(self.vision_pg):
-                main, aux = self._run_vision(vision_inputs)
-        src_rank = get_source_vision_rank(self.language_pg, 0, self.vit_batch_factor)
-        if main is not None:
-            main = broadcast_to_language_tp(main, self.language_pg, src_rank)
-            if aux is not None:
-                aux = [broadcast_to_language_tp(f, self.language_pg, src_rank) for f in aux]
         return main, aux

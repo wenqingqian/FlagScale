@@ -203,17 +203,9 @@ def setup_mimo_ddp(model, args, wrap_with_ddp: bool = True):
     if not is_mimo:
         return False, None
 
-    assert args.context_parallel_size == 1 and args.pipeline_model_parallel_size == 1, (
-        "Colocated MIMO currently requires CP=1 and PP=1."
-    )
-    assert not (args.overlap_param_gather or args.overlap_grad_reduce), (
-        "MIMO per-module DDP overlap is not yet validated; "
-        "disable --overlap-param-gather and --overlap-grad-reduce."
-    )
-    assert args.ckpt_format == "torch", (
-        "ChainedOptimizer returns a list of optimizer state dicts, which only the "
-        "legacy 'torch' checkpoint path handles; torch_dist support is future work."
-    )
+    # Model-agnostic config constraints (overlap flags, ckpt format, CP/PP,
+    # vision TP, vbf) are validated once at model construction by
+    # validate_mimo_config; not re-asserted here.
 
     print_rank_0("Colocated MIMO: wrapping vision/language modules with per-module DDP.")
     wrap_mimo_ddp(mimo_model, args)
