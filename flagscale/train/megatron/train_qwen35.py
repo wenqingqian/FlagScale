@@ -92,7 +92,7 @@ from flagscale.models.megatron.qwen3_vl.layer_specs import get_qwen3vl_vision_mo
 from flagscale.models.mimo import (
     ModuleParallelismConfig,
     build_colocated_pg_collections,
-    compute_vit_batch_factor,
+    validate_mimo_config,
 )
 
 from megatron.plugin.platform import get_platform
@@ -183,13 +183,11 @@ def model_provider(
         )
         print_rank_0(f"MIMO process group collections: {pg_summary}")
 
-        vision_micro_batch_size = getattr(args, "vision_micro_batch_size", args.micro_batch_size)
-        vit_batch_factor = compute_vit_batch_factor(
-            vision_data_parallel_size=vision_parallelism.data_parallel_size,
-            vision_micro_batch_size=vision_micro_batch_size,
-            language_data_parallel_size=language_parallelism.data_parallel_size,
-            language_micro_batch_size=args.micro_batch_size,
-            num_microbatches=get_num_microbatches(),
+        # All model-agnostic MIMO config constraints (vbf > 1, overlap flags,
+        # CP/PP, vision TP, ckpt format, owner-mapping layout) are validated
+        # in one place by the mimo package.
+        vit_batch_factor = validate_mimo_config(
+            args, vision_parallelism, language_parallelism, get_num_microbatches()
         )
         print_rank_0(
             f"MIMO vit_batch_factor={vit_batch_factor} "
@@ -442,7 +440,7 @@ def forward_step(data_iterator, model):
 
     unwrapped = unwrap_model(model)
     vision_output = None
-    if getattr(unwrapped, "use_scheduler", False):
+    if args.use_mimo:
         # MIMO scheduler path: the model owns the scheduler; it assembles a new
         # ViT macro batch when the current one is exhausted and returns the next
         # LLM microbatch together with its vision output.
