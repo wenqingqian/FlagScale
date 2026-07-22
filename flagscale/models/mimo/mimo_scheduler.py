@@ -34,16 +34,15 @@ class MIMOMicrobatchScheduler:
             and returning a list of per-microbatch vision outputs.  Each output
             is an opaque dictionary; the model decides what to put inside.
         vision_backward_fn: Callable accepting a list of per-microbatch
-            gradients and running ViT backward.  May be ``None`` if the model
-            prefers to poll :attr:`vit_backward_pending` and call backward
-            itself.
+            gradients and running ViT backward.  Invoked automatically once
+            every microbatch in the macro batch has produced a gradient.
     """
 
     def __init__(
         self,
         vit_batch_factor: int,
         vision_forward_fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
-        vision_backward_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+        vision_backward_fn: Callable[[list[dict[str, Any]]], None],
         use_fp32_grad_cache: bool = False,
     ) -> None:
         if vit_batch_factor < 1:
@@ -58,23 +57,14 @@ class MIMOMicrobatchScheduler:
         self._gradients: list[dict[str, Any] | None] = []
         self._expected_keys: list[set] = []
         self._next_idx: int = 0
-        self._vit_backward_pending: bool = False
 
     # ------------------------------------------------------------------
-    # State queries used by the training loop and the model wrapper.
+    # Macro-batch lifecycle.
     # ------------------------------------------------------------------
     def need_new_macro_batch(self) -> bool:
         """Return True when a new ViT macro batch must be assembled."""
         return self._next_idx >= len(self._macro_batches)
 
-    @property
-    def vit_backward_pending(self) -> bool:
-        """True after all microbatch gradients have been collected."""
-        return self._vit_backward_pending
-
-    # ------------------------------------------------------------------
-    # Macro-batch lifecycle.
-    # ------------------------------------------------------------------
     def prepare_macro_batch(
         self,
         get_batch_fn: Callable,
@@ -104,7 +94,6 @@ class MIMOMicrobatchScheduler:
         self._gradients = [None] * len(batches)
         self._expected_keys = [set() for _ in range(len(batches))]
         self._next_idx = 0
-        self._vit_backward_pending = False
 
     def advance(self) -> tuple[int, dict[str, Any], dict[str, Any]]:
         """Return the next microbatch index, batch dict, and vision output dict."""
@@ -118,15 +107,6 @@ class MIMOMicrobatchScheduler:
         )
         self._next_idx += 1
         return idx, self._macro_batches[idx], self._vision_outputs[idx]
-
-    def reset(self) -> None:
-        """Drop all buffered state (used at iteration boundaries / checkpoint)."""
-        self._macro_batches = []
-        self._vision_outputs = []
-        self._gradients = []
-        self._expected_keys = []
-        self._next_idx = 0
-        self._vit_backward_pending = False
 
     # ------------------------------------------------------------------
     # Gradient collection.
@@ -171,10 +151,8 @@ class MIMOMicrobatchScheduler:
         self._gradients[idx][key] = grad
 
         if self._all_gradients_ready():
-            self._vit_backward_pending = True
-            if self.vision_backward_fn is not None:
-                self.vision_backward_fn(self._gradients)
-                self._reset_after_backward()
+            self.vision_backward_fn(self._gradients)
+            self._reset_after_backward()
 
     def _all_gradients_ready(self) -> bool:
         """Check whether every registered key for every consumed microbatch is present.
@@ -201,103 +179,3 @@ class MIMOMicrobatchScheduler:
         self._gradients = []
         self._expected_keys = []
         self._next_idx = 0
-        self._vit_backward_pending = False
-
-    def run_vit_backward_if_ready(self) -> bool:
-        """Manual backward trigger for models that do not use ``vision_backward_fn``.
-
-        Returns True if backward was actually run.
-        """
-        if not self._vit_backward_pending:
-            return False
-        if self.vision_backward_fn is None:
-            raise RuntimeError("vision_backward_fn is None; cannot run ViT backward")
-        self.vision_backward_fn(self._gradients)
-        self._reset_after_backward()
-        return True
-
-
-# ------------------------------------------------------------------------------
-# Helpers for splitting/concatenating visual tensors along the token dimension.
-# ------------------------------------------------------------------------------
-
-
-def compute_microbatch_token_counts(
-    grid_thw_list: list[torch.Tensor | None],
-    merge_unit: int = 1,
-) -> list[int]:
-    """Return the number of visual tokens for each microbatch.
-
-    Args:
-        grid_thw_list: List of ``[N, 3]`` tensors, one per microbatch.  Each
-            row is ``(t, h, w)`` for one image/video.  ``None`` entries are
-            treated as microbatches with no visual data.
-        merge_unit: Optional spatial/temporal merge unit used by the vision
-            encoder (e.g. Qwen3-VL ``spatial_merge_unit``).  The raw token
-            count is divided by this value before splitting.
-
-    Returns:
-        Token counts per microbatch as Python ints.
-    """
-    counts = []
-    for grid_thw in grid_thw_list:
-        if grid_thw is None or grid_thw.numel() == 0:
-            counts.append(0)
-            continue
-        num_tokens = (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).sum().item()
-        counts.append(int(num_tokens // merge_unit))
-    return counts
-
-
-def split_visual_embeds(
-    main_embeds: torch.Tensor,
-    aux_features: list[torch.Tensor] | None,
-    token_counts: list[int],
-    dim: int = 0,
-) -> list[dict[str, Any]]:
-    """Split a macro visual tensor into per-microbatch chunks.
-
-    Args:
-        main_embeds: Concatenated visual embeddings.
-        aux_features: Optional list of auxiliary (deepstack-like) tensors with
-            the same token layout as ``main_embeds``.
-        token_counts: Token count for each microbatch.
-        dim: Dimension along which tokens are concatenated.
-
-    Returns:
-        List of dicts with the canonical layout ``{"main", "aux"}``.
-    """
-    if main_embeds is None:
-        return []
-
-    embed_splits = torch.split(main_embeds, token_counts, dim=dim)
-    aux_splits = None
-    if aux_features is not None:
-        aux_splits = [torch.split(f, token_counts, dim=dim) for f in aux_features]
-
-    outputs = []
-    for i in range(len(token_counts)):
-        out: dict[str, Any] = {"main": embed_splits[i].contiguous()}
-        if aux_splits is not None:
-            out["aux"] = [d[i].contiguous() for d in aux_splits]
-        else:
-            out["aux"] = None
-        outputs.append(out)
-    return outputs
-
-
-def concatenate_visual_grads(
-    gradients: list[dict[str, Any] | None],
-    key: str,
-    dim: int = 0,
-) -> torch.Tensor:
-    """Concatenate per-microbatch gradients back into a macro gradient.
-
-    ``key`` names the gradient slot (canonical keys are ``"main"`` and
-    ``"aux_{i}"``).  ``None`` entries (microbatches without visual data) are
-    skipped.
-    """
-    grads = [g[key] for g in gradients if g is not None and key in g]
-    if not grads:
-        raise ValueError(f"no gradients found for key '{key}'")
-    return torch.cat(grads, dim=dim).contiguous()

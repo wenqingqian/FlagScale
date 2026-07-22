@@ -18,19 +18,6 @@ class ModuleParallelismConfig:
     context_parallel_size: int = 1
 
 
-@dataclass
-class MIMOParallelismConfig:
-    """Colocated MIMO parallelism configuration for vision and language modules."""
-
-    vision: ModuleParallelismConfig
-    language: ModuleParallelismConfig
-
-    def __post_init__(self):
-        assert (
-            self.vision.context_parallel_size == 1 and self.language.context_parallel_size == 1
-        ), "Module context parallelism is restricted to 1 in colocated MIMO."
-
-
 def compute_vit_batch_factor(
     vision_data_parallel_size: int,
     vision_micro_batch_size: int,
@@ -50,7 +37,7 @@ def compute_vit_batch_factor(
     vision_samples = vision_data_parallel_size * vision_micro_batch_size
     language_samples = language_data_parallel_size * language_micro_batch_size
     # Reject silent floor-division truncation (e.g. 16 // 12) that would
-    # silently drop vision_micro_batch_size back to the direct path.
+    # silently shrink the effective vit_batch_factor.
     assert vision_samples % language_samples == 0, (
         f"vision_dp * vision_micro_batch_size ({vision_samples}) must be a multiple of "
         f"language_dp * micro_batch_size ({language_samples}). "
@@ -73,13 +60,12 @@ def validate_mimo_config(
 ) -> int:
     """Validate all model-agnostic MIMO configuration constraints in one place.
 
-    Single checkpoint for every MIMO constraint that does not depend on the
-    model adapter (see dev/CONSTRAINTS.md): per-module DDP overlap flags (C1),
-    vit_batch_factor > 1 (C2), CP/PP == 1 (C3), vision TP == 1 (C4), the
-    legacy-torch checkpoint format, and the owner-mapping layout invariant
-    ``vit_batch_factor % language_tp == 0``.  Training entries must call this
-    once before constructing the MIMO model instead of scattering such
-    asserts across entries, the model, and the optimizer setup.
+    Covers: DDP overlap flags (overlap_param_gather/overlap_grad_reduce),
+    legacy-torch ckpt format, CP/PP == 1 for both modules, vision TP == 1,
+    vit_batch_factor > 1, and vit_batch_factor % language_tp == 0; each
+    assert message states its own reason.  Training entries must call this
+    once before constructing the MIMO model; do not duplicate these checks
+    elsewhere.
 
     Returns the validated ``vit_batch_factor``.
     """

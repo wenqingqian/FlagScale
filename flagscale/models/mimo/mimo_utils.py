@@ -1,69 +1,93 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 
-"""Generic tensor utilities for MIMO module communication."""
+"""Stateless pure-function helpers for colocated MIMO.
+
+Placement rule: only stateless tensor/layout utilities live here — no
+collectives (those go to ``mimo_bridge``), no scheduling state (that goes to
+``mimo_scheduler``), no Megatron dependencies.
+"""
+
+from typing import Any
 
 import torch
-import torch.distributed as dist
 
 
-def reshard_between_tp(
-    tensor: torch.Tensor,
-    src_pg,
-    dst_pg,
-    dim: int = 0,
-) -> torch.Tensor:
-    """Reshard a tensor from one TP group to another along ``dim``.
+def compute_microbatch_token_counts(
+    grid_thw_list: list[torch.Tensor | None],
+    merge_unit: int = 1,
+) -> list[int]:
+    """Return the number of visual tokens for each microbatch.
 
     Args:
-        tensor: Local tensor shard on the source TP group.
-        src_pg: Source tensor-parallel process group (or None/singleton).
-        dst_pg: Destination tensor-parallel process group (or None/singleton).
-        dim: Dimension along which the tensor is sharded. Default is 0, which
-            matches both the ViT output layout ``[T, H]`` and the language
-            embedding SP sharding.
+        grid_thw_list: List of ``[N, 3]`` tensors, one per microbatch.  Each
+            row is ``(t, h, w)`` for one image/video.  ``None`` entries are
+            treated as microbatches with no visual data.
+        merge_unit: Optional spatial/temporal merge unit used by the vision
+            encoder (e.g. Qwen3-VL ``spatial_merge_unit``).  The raw token
+            count is divided by this value before splitting.
 
     Returns:
-        Local tensor shard on the destination TP group.
+        Token counts per microbatch as Python ints.
     """
-    src_size = dist.get_world_size(src_pg) if src_pg is not None else 1
-    dst_size = dist.get_world_size(dst_pg) if dst_pg is not None else 1
+    counts = []
+    for grid_thw in grid_thw_list:
+        if grid_thw is None or grid_thw.numel() == 0:
+            counts.append(0)
+            continue
+        num_tokens = (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).sum().item()
+        counts.append(int(num_tokens // merge_unit))
+    return counts
 
-    assert src_size >= 1 and dst_size >= 1, (
-        f"src_size={src_size} and dst_size={dst_size} must both be >= 1"
-    )
-    assert -tensor.ndim <= dim < tensor.ndim, (
-        f"dim={dim} out of range for tensor with {tensor.ndim} dimensions"
-    )
 
-    if src_size == dst_size:
-        return tensor
+def split_visual_embeds(
+    main_embeds: torch.Tensor,
+    aux_features: list[torch.Tensor] | None,
+    token_counts: list[int],
+    dim: int = 0,
+) -> list[dict[str, Any]]:
+    """Split a macro visual tensor into per-microbatch chunks.
 
-    # Gather the full tensor on the source TP group.
-    if src_size > 1:
-        gathered = [torch.empty_like(tensor) for _ in range(src_size)]
-        dist.all_gather(gathered, tensor.contiguous(), group=src_pg)
-        full_tensor = torch.cat(gathered, dim=dim)
-    else:
-        full_tensor = tensor
+    Args:
+        main_embeds: Concatenated visual embeddings.
+        aux_features: Optional list of auxiliary (deepstack-like) tensors with
+            the same token layout as ``main_embeds``.
+        token_counts: Token count for each microbatch.
+        dim: Dimension along which tokens are concatenated.
 
-    # Slice for the destination TP group.
-    if dst_size > 1:
-        dst_rank = dist.get_rank(dst_pg) if dst_pg is not None else 0
-        total = full_tensor.shape[dim]
-        assert dst_size <= total, (
-            f"destination TP size {dst_size} cannot exceed tensor size {total} along dim {dim}"
-        )
-        chunk_size = total // dst_size
-        remainder = total % dst_size
-        # Distribute remainder across first ``remainder`` ranks.
-        if dst_rank < remainder:
-            start = dst_rank * (chunk_size + 1)
-            end = start + chunk_size + 1
+    Returns:
+        List of dicts with the canonical layout ``{"main", "aux"}``.
+    """
+    if main_embeds is None:
+        return []
+
+    embed_splits = torch.split(main_embeds, token_counts, dim=dim)
+    aux_splits = None
+    if aux_features is not None:
+        aux_splits = [torch.split(f, token_counts, dim=dim) for f in aux_features]
+
+    outputs = []
+    for i in range(len(token_counts)):
+        out: dict[str, Any] = {"main": embed_splits[i].contiguous()}
+        if aux_splits is not None:
+            out["aux"] = [d[i].contiguous() for d in aux_splits]
         else:
-            start = remainder * (chunk_size + 1) + (dst_rank - remainder) * chunk_size
-            end = start + chunk_size
-        slices = [slice(None)] * full_tensor.ndim
-        slices[dim] = slice(start, end)
-        return full_tensor[tuple(slices)].contiguous()
+            out["aux"] = None
+        outputs.append(out)
+    return outputs
 
-    return full_tensor.contiguous()
+
+def concatenate_visual_grads(
+    gradients: list[dict[str, Any] | None],
+    key: str,
+    dim: int = 0,
+) -> torch.Tensor:
+    """Concatenate per-microbatch gradients back into a macro gradient.
+
+    ``key`` names the gradient slot (canonical keys are ``"main"`` and
+    ``"aux_{i}"``).  ``None`` entries (microbatches without visual data) are
+    skipped.
+    """
+    grads = [g[key] for g in gradients if g is not None and key in g]
+    if not grads:
+        raise ValueError(f"no gradients found for key '{key}'")
+    return torch.cat(grads, dim=dim).contiguous()

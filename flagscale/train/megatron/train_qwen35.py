@@ -183,9 +183,7 @@ def model_provider(
         )
         print_rank_0(f"MIMO process group collections: {pg_summary}")
 
-        # All model-agnostic MIMO config constraints (vbf > 1, overlap flags,
-        # CP/PP, vision TP, ckpt format, owner-mapping layout) are validated
-        # in one place by the mimo package.
+        # Single-point validation of model-agnostic MIMO config constraints.
         vit_batch_factor = validate_mimo_config(
             args, vision_parallelism, language_parallelism, get_num_microbatches()
         )

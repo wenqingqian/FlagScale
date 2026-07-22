@@ -16,10 +16,9 @@ getters return module-local process groups, but it has caveats:
    a proper ``ParallelContext`` plugin or push the module-local group selection
    into Megatron core.
 
-The class below intentionally supports only the Phase 1-3 configuration:
-PP=1, CP=1, no expert parallelism.  Methods that only make sense for other
-configurations raise ``NotImplementedError`` instead of returning a silently
-wrong default.
+The class below supports only PP=1, CP=1, and no expert parallelism.
+Methods that only make sense for other configurations raise
+``NotImplementedError`` instead of returning a silently wrong default.
 """
 
 from contextlib import contextmanager
