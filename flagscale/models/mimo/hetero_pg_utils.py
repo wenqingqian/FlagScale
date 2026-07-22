@@ -97,8 +97,8 @@ def _create_module_pg_collection(
 ) -> tuple[ProcessGroupCollection, torch.distributed.ProcessGroup, torch.distributed.ProcessGroup]:
     """Create all process groups for a single module and return the collection.
 
-    Also returns the embedding and position embedding groups for use by the
-    parallel context wrapper.
+    The second and third return values are the singleton group standing in
+    for the embedding and position-embedding groups; callers may discard them.
     """
     rank = dist.get_rank()
     groups = _compute_rank_groups(

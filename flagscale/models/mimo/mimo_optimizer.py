@@ -203,10 +203,6 @@ def setup_mimo_ddp(model, args, wrap_with_ddp: bool = True):
     if not is_mimo:
         return False, None
 
-    # Model-agnostic config constraints (overlap flags, ckpt format, CP/PP,
-    # vision TP, vbf) are validated once at model construction by
-    # validate_mimo_config; not re-asserted here.
-
     print_rank_0("Colocated MIMO: wrapping vision/language modules with per-module DDP.")
     wrap_mimo_ddp(mimo_model, args)
     for model_chunk in model:

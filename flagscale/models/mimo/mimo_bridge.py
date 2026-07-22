@@ -2,9 +2,9 @@
 
 """Colocated cross-rank utilities for MIMO module communication.
 
-In colocated mode rank sets overlap, so inter-module communication can use
-intra-node P2P/broadcast instead of the full ``BridgeCommunicator``.  The
-helpers here assume the deterministic rank ordering produced by
+In colocated mode the vision/language rank sets overlap, so inter-module
+communication uses intra-node P2P/broadcast.  The helpers here assume the
+deterministic rank ordering produced by
 ``flagscale.models.mimo.hetero_pg_utils``.
 """
 

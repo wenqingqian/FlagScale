@@ -21,11 +21,8 @@ import torch.distributed as dist
 from megatron.core.transformer import MegatronModule
 
 from .mimo_bridge import exchange_macro_outputs, get_my_microbatch_range
-from .mimo_scheduler import (
-    MIMOMicrobatchScheduler,
-    concatenate_visual_grads,
-    split_visual_embeds,
-)
+from .mimo_scheduler import MIMOMicrobatchScheduler
+from .mimo_utils import concatenate_visual_grads, split_visual_embeds
 from .parallel_state_ctx import switch_parallel_state
 
 
@@ -56,8 +53,7 @@ class ColocatedMIMOModel(MegatronModule):
         self.vision_model = None
         self.language_model = None
 
-        # Must come from validate_mimo_config (vbf > 1, CONSTRAINTS.md C2);
-        # config constraints are validated once at the training entry, not here.
+        # Validated once at the training entry by validate_mimo_config (vbf > 1).
         self.vit_batch_factor = vit_batch_factor
         self.scheduler = MIMOMicrobatchScheduler(
             vit_batch_factor=self.vit_batch_factor,
@@ -187,7 +183,6 @@ class ColocatedMIMOModel(MegatronModule):
         else:
             macro_main, macro_aux = None, None
 
-        # This rank's macro output covers only its own slice of the macro batch.
         self._macro_main = macro_main
         self._macro_aux = macro_aux
 
@@ -237,8 +232,7 @@ class ColocatedMIMOModel(MegatronModule):
         dL/d(main): the LM's TP boundary collectives (all-reduce, or all-gather
         for sequence parallel) aggregate input gradients before they reach the
         embedding injection point, so every language TP peer holds an identical
-        copy (verified by instrumentation: peers' captured grads are bitwise
-        identical).  No reduce/broadcast is needed — each rank simply backwards
+        copy.  No reduce/broadcast is needed — each rank simply backwards
         the gradients of its own microbatch slice through its own ViT forward,
         and vision DDP then averages parameter gradients over disjoint slices
         (equivalent to averaging over the full global batch).
@@ -270,7 +264,7 @@ class ColocatedMIMOModel(MegatronModule):
         if main_grad is None:
             return
 
-        # Cast gradients back to the ViT output dtype when fp32 cache was used.
+        # Cast gradients back to the ViT output dtype (no-op when the fp32 grad cache is off).
         target_dtype = macro_main.dtype
 
         def _to_vit_dtype(g):
