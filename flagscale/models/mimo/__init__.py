@@ -9,7 +9,7 @@ from .mimo_bridge import (
     get_my_microbatch_range,
     get_source_vision_rank,
 )
-from .mimo_config import MIMOParallelismConfig, ModuleParallelismConfig
+from .mimo_config import MIMOParallelismConfig, ModuleParallelismConfig, compute_vit_batch_factor
 from .mimo_model import ColocatedMIMOModel
 from .mimo_optimizer import (
     ChainedOptimizer,
@@ -28,6 +28,7 @@ from .parallel_state_ctx import switch_parallel_state
 __all__ = [
     "MIMOParallelismConfig",
     "ModuleParallelismConfig",
+    "compute_vit_batch_factor",
     "build_colocated_pg_collections",
     "switch_parallel_state",
     "reshard_between_tp",
