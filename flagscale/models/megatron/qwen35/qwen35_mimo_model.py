@@ -138,6 +138,13 @@ class Qwen35MIMOModel(ColocatedMIMOModel):
         merge_unit = getattr(self.vision_model, "spatial_merge_unit", 1)
         return compute_microbatch_token_counts(per_batch_grids, merge_unit=merge_unit)
 
+    def _drop_vision_data(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        # Keep the grid metadata: _count_vision_tokens needs it for the full
+        # macro batch; only the pixel tensors are safe to drop here.
+        batch["imgs"] = None
+        batch["videos"] = None
+        return batch
+
     def _extract_vision_inputs(self, my_batches: List[Dict[str, Any]]):
         imgs_videos = [t for t in (_cat_imgs_videos(b) for b in my_batches) if t is not None]
         grids = [t for t in (_cat_grids(b) for b in my_batches) if t is not None]

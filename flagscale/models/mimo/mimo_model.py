@@ -78,6 +78,16 @@ class ColocatedMIMOModel(MegatronModule):
         """
         raise NotImplementedError
 
+    def _drop_vision_data(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Drop heavy vision inputs from a microbatch this rank does not own.
+
+        Only called for microbatches outside this rank's slice of the macro
+        batch (see ``get_my_microbatch_range``).  Must preserve everything
+        needed by ``_count_vision_tokens`` (grid metadata) and by the language
+        model.  Default is a no-op.
+        """
+        return batch
+
     def _extract_vision_inputs(self, my_batches: list[dict[str, Any]]):
         """Concat this rank's microbatch slice into ``_run_vision`` inputs.
 
@@ -124,9 +134,31 @@ class ColocatedMIMOModel(MegatronModule):
         inside ``forward``.
         """
         if self.scheduler.need_new_macro_batch():
+            get_batch_fn = self._dedup_get_batch(get_batch_fn)
             self.scheduler.prepare_macro_batch(get_batch_fn, data_iterator, self)
         _, batch, vision_output = self.scheduler.advance()
         return batch, vision_output
+
+    def _dedup_get_batch(self, get_batch_fn):
+        """Wrap ``get_batch_fn`` to drop vision inputs this rank does not own.
+
+        The TP-group broadcast in ``get_batch`` delivers every microbatch's
+        images to all TP peers, but only the owner rank computes on them (see
+        ``get_my_microbatch_range``).  Dropping the non-owned copies at pull
+        time keeps them from being held for the lifetime of the macro batch.
+        """
+        lo, hi = get_my_microbatch_range(self.language_pg, self.vit_batch_factor)
+        pull_idx = 0
+
+        def get_batch_dedup(data_iterator, model):
+            nonlocal pull_idx
+            batch = get_batch_fn(data_iterator, model)
+            if not lo <= pull_idx < hi:
+                batch = self._drop_vision_data(batch)
+            pull_idx += 1
+            return batch
+
+        return get_batch_dedup
 
     def freeze(
         self,
