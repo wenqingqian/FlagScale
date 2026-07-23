@@ -331,10 +331,9 @@ class ChainedOptimizer:
     def save_parameter_state(self, filename: str):
         """Save each wrapped optimizer's parameter state to a separate file.
 
-        The per-module optimizers live in different data-parallel groups.  MIMO
-        process-group collections currently only provide NCCL DP groups, so we
-        bypass the default Gloo path and gather optimizer state on GPU before
-        writing on each group's DP rank 0.
+        The per-module optimizers live in different data-parallel groups.  The
+        state is gathered on GPU (NCCL) before writing on each group's DP
+        rank 0, instead of the default gloo/CPU gather.
         """
         if len(self.optimizers) == 1:
             self.optimizers[0].save_parameter_state(filename)

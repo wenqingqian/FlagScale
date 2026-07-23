@@ -66,9 +66,11 @@ class _ModuleParallelContext:
     def get_data_parallel_group_gloo(
         self, with_context_parallel=False, partial_data_parallel=False
     ):
-        # Gloo groups are not created by the colocated builder; fall back to the
-        # NCCL groups. This is sufficient because CP=1 and partial DP is not used.
-        return self.get_data_parallel_group(with_context_parallel, partial_data_parallel)
+        gloo_group = getattr(self.pg_collection, "dp_gloo", None)
+        assert gloo_group is not None, (
+            "pg_collection has no gloo DP group; it must be built by build_colocated_pg_collections"
+        )
+        return gloo_group
 
     def get_context_parallel_group(self, check_initialized=True):
         assert self._group_size(self.pg_collection.cp) == 1, (
