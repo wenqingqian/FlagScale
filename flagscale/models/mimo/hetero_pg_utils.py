@@ -126,8 +126,10 @@ def _create_module_pg_collection(
     # 3. Data parallel groups.
     for ranks in groups["dp"]:
         group = dist.new_group(ranks)
+        gloo_group = dist.new_group(ranks, backend="gloo")
         if rank in ranks:
             pg_collection.dp = group
+            pg_collection.dp_gloo = gloo_group
 
     # 4. Model parallel (TP+PP) groups.
     for ranks in groups["mp"]:
