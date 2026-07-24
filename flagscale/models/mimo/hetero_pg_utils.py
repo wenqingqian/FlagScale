@@ -15,12 +15,9 @@ def _validate_module_parallelism(
     cfg: ModuleParallelismConfig,
     world_size: int,
 ):
-    """Ensure module parallelism sizes multiply to world size and CP/PP are 1."""
+    """Ensure module parallelism sizes multiply to world size and CP is 1."""
     assert cfg.context_parallel_size == 1, (
         f"{module_name}: context parallelism must be 1 for colocated MIMO."
-    )
-    assert cfg.pipeline_model_parallel_size == 1, (
-        f"{module_name}: pipeline parallelism must be 1 for colocated MIMO."
     )
     product = (
         cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size * cfg.data_parallel_size
@@ -82,11 +79,17 @@ def _compute_rank_groups(
                 ranks.append(pp_rank * tp_size * dp_size + dp_rank * tp_size + tp_rank)
         mp_groups.append(ranks)
 
+    # TP+DP groups: fixed pp, vary (tp, dp).
+    tp_dp_groups: list[list[int]] = []
+    for pp_rank in range(pp_size):
+        tp_dp_groups.append([pp_rank * tp_size * dp_size + i for i in range(tp_size * dp_size)])
+
     return {
         "tp": tp_groups,
         "dp": dp_groups,
         "pp": pp_groups,
         "mp": mp_groups,
+        "tp_dp": tp_dp_groups,
     }
 
 
@@ -94,6 +97,7 @@ def _create_module_pg_collection(
     module_name: str,
     cfg: ModuleParallelismConfig,
     world_size: int,
+    build_embedding_groups: bool = False,
 ) -> tuple[ProcessGroupCollection, torch.distributed.ProcessGroup, torch.distributed.ProcessGroup]:
     """Create all process groups for a single module and return the collection.
 
@@ -137,23 +141,46 @@ def _create_module_pg_collection(
         if rank in ranks:
             pg_collection.mp = group
 
-    # 5. Singleton groups for all unused dimensions (CP=1, EP=1, embedding/pos
-    # embedding for PP=1).  Every rank must participate in the same set of
-    # ``new_group`` calls, so we create one singleton group per global rank in
-    # a deterministic order and keep the group that contains the current rank.
+    # 5. TP+DP groups (fixed pp), matching Megatron's
+    # ``get_tensor_and_data_parallel_group`` semantics (with CP=1 the
+    # with/without-CP variants coincide).
+    for ranks in groups["tp_dp"]:
+        group = dist.new_group(ranks)
+        if rank in ranks:
+            pg_collection.tp_dp_cp = group
+
+    # 6. Singleton groups for all unused dimensions (CP=1, EP=1).  Every rank
+    # must participate in the same set of ``new_group`` calls, so we create
+    # one singleton group per global rank in a deterministic order and keep
+    # the group that contains the current rank.
     singleton_group = None
     for r in range(world_size):
         group = dist.new_group(ranks=[r])
         if r == rank:
             singleton_group = group
     assert singleton_group is not None, "failed to create singleton group for current rank"
-    pg_collection.embd = singleton_group
-    pg_collection.pos_embd = singleton_group
+
+    if build_embedding_groups and cfg.pipeline_model_parallel_size > 1:
+        # Tied embedding/output weights live on the first and last PP ranks;
+        # the init-time weight sync needs a real group over each PP column's
+        # endpoint pair.  Middle stages belong to no endpoint pair and keep
+        # the singleton (their all-reduce is a no-op), matching vanilla.
+        embd_group = singleton_group
+        for ranks in groups["pp"]:
+            endpoints = [ranks[0], ranks[-1]]
+            group = dist.new_group(endpoints)
+            if rank in endpoints:
+                embd_group = group
+        pg_collection.embd = embd_group
+        pg_collection.pos_embd = embd_group
+    else:
+        pg_collection.embd = singleton_group
+        pg_collection.pos_embd = singleton_group
     pg_collection.cp = singleton_group
     pg_collection.tp_cp = singleton_group
     pg_collection.hcp = [singleton_group]
 
-    # 6. Expert groups (not used, fallback to the singleton group).
+    # 7. Expert groups (not used, fallback to the singleton group).
     pg_collection.ep = singleton_group
     pg_collection.expt_tp = singleton_group
     pg_collection.tp_ep = singleton_group
@@ -161,12 +188,11 @@ def _create_module_pg_collection(
     pg_collection.expt_dp = singleton_group
     pg_collection.intra_expt_dp = singleton_group
 
-    # 7. Data-parallel groups with CP=1 alias the DP group.
+    # 8. Data-parallel groups with CP=1 alias the DP group.
     pg_collection.dp_cp = pg_collection.dp
     pg_collection.intra_dp_cp = pg_collection.dp
-    pg_collection.tp_dp_cp = pg_collection.mp
 
-    # 8. Distributed-optimizer groups: map model-parallel to intra and
+    # 9. Distributed-optimizer groups: map model-parallel to intra and
     # data-parallel to inter, matching Megatron-LM-FL expectations.
     pg_collection.intra_dist_opt = pg_collection.mp
     pg_collection.inter_dist_opt = pg_collection.dp
@@ -236,9 +262,13 @@ def build_colocated_pg_collections(
     _validate_module_parallelism("language", language_parallelism, world_size)
 
     # Create vision groups first, then language groups, to keep a deterministic
-    # global creation order across all ranks.
+    # global creation order across all ranks.  Only the language module needs
+    # real embedding groups (tied embedding/output weights across PP stages);
+    # the vision module is never pipelined and keeps singletons.
     vision_pg, _, _ = _create_module_pg_collection("vision", vision_parallelism, world_size)
-    language_pg, _, _ = _create_module_pg_collection("language", language_parallelism, world_size)
+    language_pg, _, _ = _create_module_pg_collection(
+        "language", language_parallelism, world_size, build_embedding_groups=True
+    )
 
     _validate_colocated_rank_mapping(vision_pg, language_pg, world_size)
 

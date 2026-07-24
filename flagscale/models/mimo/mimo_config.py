@@ -61,7 +61,9 @@ def validate_mimo_config(
     """Validate all model-agnostic MIMO configuration constraints in one place.
 
     Covers: DDP overlap flags (overlap_param_gather/overlap_grad_reduce),
-    legacy-torch ckpt format, CP/PP == 1 for both modules, vision TP == 1,
+    legacy-torch ckpt format, CP == 1 for both modules, language PP >= 1 with
+    vision PP following it (grid artifact; the vision module itself is never
+    pipelined and lives only on language first-stage ranks), vision TP == 1,
     vit_batch_factor > 1, and vit_batch_factor % language_tp == 0; each
     assert message states its own reason.  Training entries must call this
     once before constructing the MIMO model; do not duplicate these checks
@@ -78,13 +80,22 @@ def validate_mimo_config(
         "legacy 'torch' checkpoint path handles; torch_dist support is future work."
     )
     for name, parallelism in (("vision", vision_parallelism), ("language", language_parallelism)):
-        assert (
-            parallelism.context_parallel_size == 1 and parallelism.pipeline_model_parallel_size == 1
-        ), (
-            f"Colocated MIMO currently requires CP=1 and PP=1, got {name} "
-            f"cp={parallelism.context_parallel_size}, "
-            f"pp={parallelism.pipeline_model_parallel_size}."
+        assert parallelism.context_parallel_size == 1, (
+            f"Colocated MIMO currently requires CP=1, got {name} "
+            f"cp={parallelism.context_parallel_size}."
         )
+    # Language PP > 1 is supported with the vision module colocated on the
+    # language first-stage ranks only.  Vision PP follows language PP purely
+    # as a grid artifact (the vision DP groups then land on same-stage rank
+    # sets); the vision module itself is never pipelined.
+    assert vision_parallelism.pipeline_model_parallel_size == (
+        language_parallelism.pipeline_model_parallel_size
+    ), (
+        f"Colocated MIMO requires vision PP == language PP (vision PP is a "
+        f"grid artifact, the vision module is not pipelined), got vision "
+        f"pp={vision_parallelism.pipeline_model_parallel_size}, language "
+        f"pp={language_parallelism.pipeline_model_parallel_size}."
+    )
     assert vision_parallelism.tensor_model_parallel_size == 1, (
         f"Colocated MIMO currently requires vision TP=1, got "
         f"vision tp={vision_parallelism.tensor_model_parallel_size}."
