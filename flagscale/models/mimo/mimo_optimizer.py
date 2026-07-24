@@ -384,6 +384,23 @@ class ChainedOptimizer:
         return self.optimizers[0].get_config()
 
 
+def _pad_param_group_collectives():
+    """Pad the world collectives of one missing module-optimizer build.
+
+    ``get_megatron_optimizer`` all-gathers param-group keys over the world
+    group in ``_get_param_groups`` (three times per build: dense, MoE and
+    engram filters), so every rank must issue the same NUMBER of
+    ``get_megatron_optimizer`` calls.  Ranks without a vision module (language
+    PP stages beyond the first) pad the missing vision-optimizer call here.
+    If Megatron changes the number of world collectives per optimizer build,
+    this padding must be updated to match.
+    """
+    world = torch.distributed.get_world_size()
+    for _ in range(3):
+        gathered = [None] * world
+        torch.distributed.all_gather_object(gathered, [])
+
+
 def build_mimo_optimizer(config, config_overrides, mimo_model, args):
     """Build separate optimizers for vision and language modules."""
     optimizers = []
@@ -400,6 +417,16 @@ def build_mimo_optimizer(config, config_overrides, mimo_model, args):
                 dump_param_to_param_group_map=args.dump_param_to_param_group_map,
             )
             optimizers.append(vision_opt)
+        # Grad stats (norm / zero count) must not reduce over groups that
+        # include ranks without a vision optimizer: the default
+        # (intra_dist_opt = vision MP group) spans PP stages at language PP>1
+        # and mismatches there.  Use the vision TP group instead — identical
+        # membership to the vision MP group at vision PP=1 (so PP=1 numerics
+        # are unchanged), and always intra-stage.
+        for opt in getattr(vision_opt, "chained_optimizers", [vision_opt]):
+            opt.grad_stats_parallel_group = mimo_model.vision_pg.tp
+    else:
+        _pad_param_group_collectives()
 
     assert mimo_model.language_pg is not None, "language_pg must be set"
     language_ddp = getattr(mimo_model, "language_ddp", mimo_model.language_model)

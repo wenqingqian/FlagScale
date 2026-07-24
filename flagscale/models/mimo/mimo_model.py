@@ -62,11 +62,6 @@ class ColocatedMIMOModel(MegatronModule):
             use_fp32_grad_cache=use_fp32_grad_cache,
         )
 
-        # Buffers populated during _vision_forward_fn and consumed by
-        # _vision_backward_fn.
-        self._macro_main: torch.Tensor | None = None
-        self._macro_aux: list[torch.Tensor] | None = None
-
     # ------------------------------------------------------------------
     # Model adapter interface: the only model-specific surface.
     # ------------------------------------------------------------------
@@ -144,8 +139,10 @@ class ColocatedMIMOModel(MegatronModule):
 
         The TP-group broadcast in ``get_batch`` delivers every microbatch's
         images to all TP peers, but only the owner rank computes on them (see
-        ``get_my_microbatch_range``).  Dropping the non-owned copies at pull
-        time keeps them from being held for the lifetime of the macro batch.
+        ``get_my_microbatch_range``).  Ranks without a vision module (language
+        PP stages beyond the first) never compute on any of them.  Dropping
+        the non-owned copies at pull time keeps them from being held for the
+        lifetime of the macro batch.
         """
         lo, hi = get_my_microbatch_range(self.language_pg, self.vit_batch_factor)
         pull_idx = 0
@@ -153,7 +150,7 @@ class ColocatedMIMOModel(MegatronModule):
         def get_batch_dedup(data_iterator, model):
             nonlocal pull_idx
             batch = get_batch_fn(data_iterator, model)
-            if not lo <= pull_idx < hi:
+            if self.vision_model is None or not lo <= pull_idx < hi:
                 batch = self._drop_vision_data(batch)
             pull_idx += 1
             return batch
@@ -183,7 +180,7 @@ class ColocatedMIMOModel(MegatronModule):
     # ------------------------------------------------------------------
     # Scheduler callbacks: run ViT on a macro batch and back-propagate later.
     # ------------------------------------------------------------------
-    def _vision_forward_fn(self, batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _vision_forward_fn(self, batches: list[dict[str, Any]], macro) -> list[dict[str, Any]]:
         """Run one ViT forward over this rank's slice of the macro batch.
 
         ``batches`` is a list of dictionaries returned by the training loop's
@@ -191,7 +188,8 @@ class ColocatedMIMOModel(MegatronModule):
         slice (see ``get_my_microbatch_range``), splits the output back into
         per-microbatch chunks, and exchanges chunks inside the language TP
         group so every rank holds the full macro batch's outputs (its own
-        slice computed, the rest received from their owner ranks).
+        slice computed, the rest received from their owner ranks).  The ViT
+        outputs to back-propagate later are stashed on ``macro.ctx``.
         """
         if self.vision_model is None:
             return [{"main": None, "aux": None} for _ in batches]
@@ -215,8 +213,7 @@ class ColocatedMIMOModel(MegatronModule):
         else:
             macro_main, macro_aux = None, None
 
-        self._macro_main = macro_main
-        self._macro_aux = macro_aux
+        macro.ctx = (macro_main, macro_aux)
 
         # Assemble the full per-microbatch output list: entries in this rank's
         # own slice hold locally computed tensors; other entries are empty
@@ -257,7 +254,7 @@ class ColocatedMIMOModel(MegatronModule):
         exchange_macro_outputs(entries, self.language_pg, self.vit_batch_factor)
         return entries
 
-    def _vision_backward_fn(self, gradients: list[dict[str, Any]]) -> None:
+    def _vision_backward_fn(self, macro) -> None:
         """Run ViT backward after all microbatch gradients are collected.
 
         Each rank's captured gradient for a microbatch is already the complete
@@ -272,7 +269,8 @@ class ColocatedMIMOModel(MegatronModule):
         if self.vision_model is None:
             return
 
-        macro_main, macro_aux = self._macro_main, self._macro_aux
+        gradients = macro.gradients
+        macro_main, macro_aux = macro.ctx
         if macro_main is None:
             return
 
@@ -311,8 +309,7 @@ class ColocatedMIMOModel(MegatronModule):
         with switch_parallel_state(self.vision_pg):
             torch.autograd.backward(targets, grads)
 
-        self._macro_main = None
-        self._macro_aux = None
+        macro.ctx = None
 
     # ------------------------------------------------------------------
     # Forward helpers for the subclass (generic).

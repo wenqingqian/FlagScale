@@ -16,8 +16,9 @@ getters return module-local process groups, but it has caveats:
    a proper ``ParallelContext`` plugin or push the module-local group selection
    into Megatron core.
 
-The class below supports only PP=1, CP=1, and no expert parallelism.
-Methods that only make sense for other configurations raise
+The class below supports only CP=1 and no expert parallelism.  PP > 1 is
+supported for the language module (the vision module stays on first-stage
+ranks).  Methods that only make sense for other configurations raise
 ``NotImplementedError`` instead of returning a silently wrong default.
 """
 
@@ -100,15 +101,10 @@ class _ModuleParallelContext:
         return self.pg_collection.tp
 
     def get_tensor_and_data_parallel_group(self, with_context_parallel=False):
-        if with_context_parallel:
-            assert self._group_size(self.pg_collection.tp_dp_cp) == 1, (
-                "CP > 1 is not supported in colocated MIMO yet"
-            )
-            return self.pg_collection.tp_dp_cp
-        # CP=1: the model-parallel group doubles as the tensor+data group.
-        # (tp_dp is not a ProcessGroupCollection field; do not attach it
-        # dynamically — use the mp field as the alias.)
-        return self.pg_collection.mp
+        # tp_dp_cp is the real TPxDP group (fixed pp) built by
+        # ``build_colocated_pg_collections``; with CP=1 the
+        # with/without-context-parallel variants coincide.
+        return self.pg_collection.tp_dp_cp
 
     def get_tensor_and_context_parallel_group(self, check_initialized=True):
         assert self._group_size(self.pg_collection.tp_cp) == 1, (
@@ -245,16 +241,14 @@ class _ModuleParallelContext:
         return ranks[-1]
 
     def get_pipeline_model_parallel_next_rank(self, group=None):
-        assert self.get_pipeline_model_parallel_world_size(group) == 1, (
-            "PP > 1 is not supported in colocated MIMO yet"
-        )
-        return None
+        ranks = self._group_ranks(group or self.pg_collection.pp)
+        idx = self._group_rank(group or self.pg_collection.pp)
+        return ranks[(idx + 1) % len(ranks)]
 
     def get_pipeline_model_parallel_prev_rank(self, group=None):
-        assert self.get_pipeline_model_parallel_world_size(group) == 1, (
-            "PP > 1 is not supported in colocated MIMO yet"
-        )
-        return None
+        ranks = self._group_ranks(group or self.pg_collection.pp)
+        idx = self._group_rank(group or self.pg_collection.pp)
+        return ranks[(idx - 1) % len(ranks)]
 
     def get_last_rank_when_using_pipeline(self):
         return self.get_pipeline_model_parallel_last_rank()
