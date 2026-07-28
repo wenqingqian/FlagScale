@@ -163,6 +163,7 @@ def model_provider(
             tensor_model_parallel_size=args.tensor_model_parallel_size,
             pipeline_model_parallel_size=args.pipeline_model_parallel_size,
             data_parallel_size=world_size // args.tensor_model_parallel_size // args.pipeline_model_parallel_size,
+            expert_model_parallel_size=getattr(args, "expert_model_parallel_size", 1),
         )
         pg_collections = build_colocated_pg_collections(
             vision_parallelism, language_parallelism, world_size

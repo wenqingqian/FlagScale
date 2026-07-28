@@ -10,12 +10,16 @@ class ModuleParallelismConfig:
     """Parallelism configuration for a single MIMO module.
 
     All sizes must multiply to the world size for colocated deployment.
+    ``expert_model_parallel_size`` subdivides the data-parallel domain
+    (``dp = ep * expert_dp``) and therefore does not appear in the product.
+    Only the language module may set it > 1 (the vision module is dense).
     """
 
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     data_parallel_size: int = 1
     context_parallel_size: int = 1
+    expert_model_parallel_size: int = 1
 
 
 def compute_vit_batch_factor(
@@ -99,6 +103,21 @@ def validate_mimo_config(
     assert vision_parallelism.tensor_model_parallel_size == 1, (
         f"Colocated MIMO currently requires vision TP=1, got "
         f"vision tp={vision_parallelism.tensor_model_parallel_size}."
+    )
+    # Expert parallelism (EP) subdivides the language DP domain as
+    # dp = ep * expert_dp and never applies to the dense vision module.
+    # MoE token dispatch runs in the language forward, which every rank
+    # enters for every microbatch, so the all-to-all collectives stay
+    # aligned; expert parameter gradients reduce over the expert-DP
+    # group (singleton when ep == dp).
+    assert vision_parallelism.expert_model_parallel_size == 1, (
+        f"Colocated MIMO requires vision EP=1 (vision module is dense), "
+        f"got vision ep={vision_parallelism.expert_model_parallel_size}."
+    )
+    language_ep = language_parallelism.expert_model_parallel_size
+    assert language_ep >= 1 and (language_parallelism.data_parallel_size % language_ep == 0), (
+        f"language ep ({language_ep}) must divide language dp "
+        f"({language_parallelism.data_parallel_size})."
     )
 
     vision_micro_batch_size = getattr(args, "vision_micro_batch_size", args.micro_batch_size)
