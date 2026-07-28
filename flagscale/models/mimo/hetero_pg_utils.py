@@ -180,13 +180,78 @@ def _create_module_pg_collection(
     pg_collection.tp_cp = singleton_group
     pg_collection.hcp = [singleton_group]
 
-    # 7. Expert groups (not used, fallback to the singleton group).
-    pg_collection.ep = singleton_group
-    pg_collection.expt_tp = singleton_group
-    pg_collection.tp_ep = singleton_group
-    pg_collection.tp_ep_pp = singleton_group
-    pg_collection.expt_dp = singleton_group
-    pg_collection.intra_expt_dp = singleton_group
+    # 7. Expert groups.  EP subdivides the module's DP domain following
+    # Megatron's expert RankGenerator ('tp-ep-dp-pp') semantics: with
+    # dp = ep * edp, the DP index d decomposes as d = edp_idx * ep + ep_idx.
+    # The vision module is dense (ep == 1) and keeps singleton fallbacks.
+    ep_size = cfg.expert_model_parallel_size
+    if ep_size > 1:
+        tp_size = cfg.tensor_model_parallel_size
+        pp_size = cfg.pipeline_model_parallel_size
+        dp_size = cfg.data_parallel_size
+        assert dp_size % ep_size == 0, f"{module_name}: EP ({ep_size}) must divide DP ({dp_size})."
+        edp_size = dp_size // ep_size
+
+        def _rank(pp_idx: int, d_idx: int, tp_idx: int) -> int:
+            return pp_idx * tp_size * dp_size + d_idx * tp_size + tp_idx
+
+        # EP groups: fixed (pp, tp, edp), vary ep — consecutive DP blocks.
+        for pp_idx in range(pp_size):
+            for tp_idx in range(tp_size):
+                for edp_idx in range(edp_size):
+                    ranks = [_rank(pp_idx, edp_idx * ep_size + e, tp_idx) for e in range(ep_size)]
+                    group = dist.new_group(ranks)
+                    if rank in ranks:
+                        pg_collection.ep = group
+
+        # Expert DP groups: fixed (pp, tp, ep), vary edp — strided by ep.
+        for pp_idx in range(pp_size):
+            for tp_idx in range(tp_size):
+                for e in range(ep_size):
+                    ranks = [
+                        _rank(pp_idx, edp_idx * ep_size + e, tp_idx) for edp_idx in range(edp_size)
+                    ]
+                    group = dist.new_group(ranks)
+                    gloo_group = dist.new_group(ranks, backend="gloo")
+                    if rank in ranks:
+                        pg_collection.expt_dp = group
+                        pg_collection.intra_expt_dp = group
+                        pg_collection.expt_dp_gloo = gloo_group
+
+        # TPxEP groups: fixed (pp, edp), vary (tp, ep).
+        for pp_idx in range(pp_size):
+            for edp_idx in range(edp_size):
+                ranks = [
+                    _rank(pp_idx, edp_idx * ep_size + e, tp_idx)
+                    for tp_idx in range(tp_size)
+                    for e in range(ep_size)
+                ]
+                group = dist.new_group(ranks)
+                if rank in ranks:
+                    pg_collection.tp_ep = group
+
+        # TPxEPxPP groups: fixed edp, vary (tp, ep, pp).
+        for edp_idx in range(edp_size):
+            ranks = [
+                _rank(pp_idx, edp_idx * ep_size + e, tp_idx)
+                for pp_idx in range(pp_size)
+                for tp_idx in range(tp_size)
+                for e in range(ep_size)
+            ]
+            group = dist.new_group(ranks)
+            if rank in ranks:
+                pg_collection.tp_ep_pp = group
+
+        # Expert TP groups coincide with the module's TP groups (fixed d =
+        # fixed (edp, ep)), so the existing TP group is the right object.
+        pg_collection.expt_tp = pg_collection.tp
+    else:
+        pg_collection.ep = singleton_group
+        pg_collection.expt_tp = singleton_group
+        pg_collection.tp_ep = singleton_group
+        pg_collection.tp_ep_pp = singleton_group
+        pg_collection.expt_dp = singleton_group
+        pg_collection.intra_expt_dp = singleton_group
 
     # 8. Data-parallel groups with CP=1 alias the DP group.
     pg_collection.dp_cp = pg_collection.dp

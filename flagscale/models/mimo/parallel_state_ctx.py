@@ -16,9 +16,11 @@ getters return module-local process groups, but it has caveats:
    a proper ``ParallelContext`` plugin or push the module-local group selection
    into Megatron core.
 
-The class below supports only CP=1 and no expert parallelism.  PP > 1 is
-supported for the language module (the vision module stays on first-stage
-ranks).  Methods that only make sense for other configurations raise
+The class below supports only CP=1.  Expert parallelism (EP > 1) is
+supported for the language module (the vision module is dense and keeps
+singleton expert groups).  PP > 1 is supported for the language module
+(the vision module stays on first-stage ranks).  Methods that only make
+sense for other configurations raise
 ``NotImplementedError`` instead of returning a silently wrong default.
 """
 
@@ -128,6 +130,9 @@ class _ModuleParallelContext:
         return self.pg_collection.expt_dp
 
     def get_expert_data_parallel_group_gloo(self):
+        gloo_group = getattr(self.pg_collection, "expt_dp_gloo", None)
+        if gloo_group is not None:
+            return gloo_group
         return self.get_expert_data_parallel_group()
 
     def get_intra_distributed_optimizer_instance_group(self):
