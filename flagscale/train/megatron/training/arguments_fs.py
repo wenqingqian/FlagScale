@@ -77,7 +77,7 @@ class FSTrainArguments:
                 "timeout": timedelta(minutes=args.distributed_timeout_minutes),
             }
             if args.distributed_backend == "flagcx":
-                init_process_group_kwargs["backend"] = "cpu:gloo,cuda:flagcx"
+                init_process_group_kwargs["backend"] = "cpu:gloo,cuda:flagcx,txda:flagcx"
             # for communication based cpu
             if args.enable_hetero and args.hetero_use_cpu_communication:
                 # if not all(device_type == args.hetero_device_types[0] for device_type in args.hetero_device_types):
@@ -253,10 +253,6 @@ class FSTrainArguments:
                 accumulated_world_size += temp_world_size
                 current_process_mesh_idx += 1
         # DeepSeek-V4 Temporary
-        if self.args.enable_hyper_connections:
-            assert not self.args.overlap_moe_expert_parallel_comm, (
-                "Hyper-connection is not supported with overlap_moe_expert_parallel_comm yet!"
-            )
         if self.args.experimental_attention_variant == "dsv4_hybrid":
             assert self.args.context_parallel_size == 1, (
                 "Context parallelism is not supported with dsv4_hybrid attention variant yet!"
@@ -447,21 +443,15 @@ class FSTrainArguments:
                     "If you do not want to offload all embedding optimizer states to CPU, please disable this and set the --optimizer-offload-fraction to a value less than 1 to offload part of the optimizer states to CPU."
                     "Of course you can set the --optimizer-offload-fraction to offload other params meanwhile enable this to offload all embedding optimizer states to CPU."
                 )
-            assert not self.args.use_megatron_fsdp, (
-                "Megatron FSDP is not supported yet; support is planned for a later version."
-            )
-            assert not self.args.init_model_with_meta_device, (
-                "Init_model_with_meta_device is not supported yet; support is planned for a later version."
-            )
-            assert self.args.use_distributed_optimizer, (
-                "When use engram, distributed_optimizer must be enabled, because there is a bug caused by allreduce grad norm in model parallel group when do not use distributed_optimizer. We have not found a pretty solution yet, so disable it temporarily."
-            )
-        assert not (
-            args.pipeline_model_parallel_size == 1 and args.overlap_moe_expert_parallel_comm
-        ), (
-            "When no pipeline and enable overlap_moe_expert_parallel_comm, a bug will occur, it will be fixed in a later version."
-        )
-
+            assert (
+                not self.args.use_megatron_fsdp
+            ), "Megatron FSDP is not supported yet; support is planned for a later version."
+            assert (
+                not self.args.init_model_with_meta_device
+            ), "Init_model_with_meta_device is not supported yet; support is planned for a later version."
+            assert (
+                self.args.use_distributed_optimizer
+            ), "When use engram, distributed_optimizer must be enabled, because there is a bug caused by allreduce grad norm in model parallel group when do not use distributed_optimizer. We have not found a pretty solution yet, so disable it temporarily."
 
 def _add_hetero_args(parser):
     """Add heterogeneous training related arguments (FlagScale specific)."""
@@ -808,11 +798,6 @@ def _add_distributed_args(parser):
         "--no-shared-fs",
         action="store_true",
         help="Indicate whether not running on a shared file system.",
-    )
-    group.add_argument(
-        "--use-padded-layerwise-optimizer",
-        action="store_true",
-        help="Enable pad when use layer-wise optimizer.",
     )
     return parser
 
