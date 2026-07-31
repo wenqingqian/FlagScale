@@ -2237,7 +2237,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
     save_wgrads_in_this_iteration = (
         args.save_wgrads_interval is not None and (iteration + 1) % args.save_wgrads_interval == 0
     )
-    
+
     ########## FlagScale Begin ##########
     def _zero_grad_buffer(model_chunk):
         """Zero the grad buffer."""

@@ -56,7 +56,6 @@ def get_source_vision_rank(language_pg, forward_idx_in_round, vit_batch_factor):
     assert vit_batch_factor >= 1, f"vit_batch_factor must be >= 1, got {vit_batch_factor}"
     tp_first = _get_language_tp_first_global_rank(language_pg)
     language_tp_size = max(1, dist.get_world_size(language_pg.tp))
-    # Guard against source-rank cycling that would leave the current TP group.
     assert vit_batch_factor % language_tp_size == 0, (
         f"vit_batch_factor ({vit_batch_factor}) must be divisible by language_tp_size "
         f"({language_tp_size}) for colocated MIMO source-rank cycling"

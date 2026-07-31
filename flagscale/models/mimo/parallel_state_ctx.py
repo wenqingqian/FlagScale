@@ -223,7 +223,6 @@ class _ModuleParallelContext:
         """Return the global ranks that belong to ``group``."""
         if group is None:
             return [dist.get_rank()]
-        # PyTorch 1.12+ exposes the global ranks of a process group.
         assert hasattr(dist, "get_process_group_ranks"), (
             "dist.get_process_group_ranks is required for colocated MIMO"
         )

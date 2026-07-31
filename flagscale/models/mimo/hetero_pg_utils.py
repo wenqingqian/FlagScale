@@ -115,19 +115,16 @@ def _create_module_pg_collection(
     pg_collection = ProcessGroupCollection()
 
     # Create groups in a fixed order across all ranks.
-    # 1. Tensor parallel groups.
     for ranks in groups["tp"]:
         group = dist.new_group(ranks)
         if rank in ranks:
             pg_collection.tp = group
 
-    # 2. Pipeline parallel groups.
     for ranks in groups["pp"]:
         group = dist.new_group(ranks)
         if rank in ranks:
             pg_collection.pp = group
 
-    # 3. Data parallel groups.
     for ranks in groups["dp"]:
         group = dist.new_group(ranks)
         gloo_group = dist.new_group(ranks, backend="gloo")
@@ -135,13 +132,12 @@ def _create_module_pg_collection(
             pg_collection.dp = group
             pg_collection.dp_gloo = gloo_group
 
-    # 4. Model parallel (TP+PP) groups.
     for ranks in groups["mp"]:
         group = dist.new_group(ranks)
         if rank in ranks:
             pg_collection.mp = group
 
-    # 5. TP+DP groups (fixed pp), matching Megatron's
+    # TP+DP groups (fixed pp), matching Megatron's
     # ``get_tensor_and_data_parallel_group`` semantics (with CP=1 the
     # with/without-CP variants coincide).
     for ranks in groups["tp_dp"]:
@@ -149,7 +145,7 @@ def _create_module_pg_collection(
         if rank in ranks:
             pg_collection.tp_dp_cp = group
 
-    # 6. Singleton groups for all unused dimensions (CP=1, EP=1).  Every rank
+    # Singleton groups for all unused dimensions (CP=1, EP=1).  Every rank
     # must participate in the same set of ``new_group`` calls, so we create
     # one singleton group per global rank in a deterministic order and keep
     # the group that contains the current rank.
@@ -180,7 +176,7 @@ def _create_module_pg_collection(
     pg_collection.tp_cp = singleton_group
     pg_collection.hcp = [singleton_group]
 
-    # 7. Expert groups.  EP subdivides the module's DP domain following
+    # Expert groups.  EP subdivides the module's DP domain following
     # Megatron's expert RankGenerator ('tp-ep-dp-pp') semantics: with
     # dp = ep * edp, the DP index d decomposes as d = edp_idx * ep + ep_idx.
     # The vision module is dense (ep == 1) and keeps singleton fallbacks.
@@ -253,11 +249,11 @@ def _create_module_pg_collection(
         pg_collection.expt_dp = singleton_group
         pg_collection.intra_expt_dp = singleton_group
 
-    # 8. Data-parallel groups with CP=1 alias the DP group.
+    # Data-parallel groups with CP=1 alias the DP group.
     pg_collection.dp_cp = pg_collection.dp
     pg_collection.intra_dp_cp = pg_collection.dp
 
-    # 9. Distributed-optimizer groups: map model-parallel to intra and
+    # Distributed-optimizer groups: map model-parallel to intra and
     # data-parallel to inter, matching Megatron-LM-FL expectations.
     pg_collection.intra_dist_opt = pg_collection.mp
     pg_collection.inter_dist_opt = pg_collection.dp
