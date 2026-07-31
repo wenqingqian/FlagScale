@@ -284,7 +284,15 @@ class ChainedOptimizer:
         return all(getattr(opt, "is_stub_optimizer", False) for opt in self.optimizers)
 
     def state_dict(self, is_loading: bool = False):
-        return [_optimizer_state_dict(opt, is_loading=is_loading) for opt in self.optimizers]
+        # Stub optimizers (all their params frozen) have no inner optimizer
+        # and Megatron's state_dict/load_state_dict carry no stub guard —
+        # keep a None placeholder so positions stay aligned with load.
+        return [
+            None
+            if getattr(opt, "is_stub_optimizer", False)
+            else _optimizer_state_dict(opt, is_loading=is_loading)
+            for opt in self.optimizers
+        ]
 
     def sharded_state_dict(self, state_dict=None, **kwargs):
         """Return sharded state dict for distributed checkpoint formats."""
@@ -295,6 +303,9 @@ class ChainedOptimizer:
             f"expected {len(self.optimizers)} optimizer state dicts, got {len(state_dicts)}"
         )
         for opt, sd in zip(self.optimizers, state_dicts):
+            if getattr(opt, "is_stub_optimizer", False):
+                # Stub: nothing was saved for it (None placeholder).
+                continue
             opt.load_state_dict(sd)
 
     def load_state_dict_from_file(self, checkpoint_name: str):
@@ -334,8 +345,12 @@ class ChainedOptimizer:
             self.optimizers[0].save_parameter_state(filename)
             return
         for idx, opt in enumerate(self.optimizers):
-            opt_filename = self._per_optimizer_filename(filename, idx)
             inner = self._unwrap_distributed_optimizer(opt)
+            if inner is not None and getattr(inner, "is_stub_optimizer", False):
+                # Stub DistributedOptimizer (all its params frozen): no
+                # parameter state exists and its DP group is uninitialized.
+                continue
+            opt_filename = self._per_optimizer_filename(filename, idx)
             if inner is not None:
                 state = inner.get_parameter_state_dp_zero(use_gloo_comm=False)
                 if state is not None:
@@ -351,8 +366,12 @@ class ChainedOptimizer:
             )
             return
         for idx, opt in enumerate(self.optimizers):
-            opt_filename = self._per_optimizer_filename(filename, idx)
             inner = self._unwrap_distributed_optimizer(opt)
+            if inner is not None and getattr(inner, "is_stub_optimizer", False):
+                # Stub DistributedOptimizer (all its params frozen): nothing
+                # was saved for it and its DP group is uninitialized.
+                continue
+            opt_filename = self._per_optimizer_filename(filename, idx)
             if inner is not None:
                 state = None
                 if inner.data_parallel_group.rank() == 0:

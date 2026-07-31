@@ -53,6 +53,10 @@ class ColocatedMIMOModel(MegatronModule):
         self.vision_model = None
         self.language_model = None
 
+        # Set by ``freeze``: a frozen ViT forwards under no_grad and skips the
+        # delayed backward entirely.
+        self._vision_frozen = False
+
         # Validated once at the training entry by validate_mimo_config (vbf > 1).
         self.vit_batch_factor = vit_batch_factor
         self.scheduler = MIMOMicrobatchScheduler(
@@ -164,6 +168,7 @@ class ColocatedMIMOModel(MegatronModule):
         freeze_vision_projection: bool,
     ):
         """Freeze model modules."""
+        self._vision_frozen = freeze_vision_model and self.vision_model is not None
         modules = []
         if freeze_language_model and self.language_model is not None:
             modules.append(self.language_model)
@@ -209,7 +214,12 @@ class ColocatedMIMOModel(MegatronModule):
         my_inputs = self._extract_vision_inputs(batches[lo:hi])
         if my_inputs is not None:
             with switch_parallel_state(self.vision_pg):
-                macro_main, macro_aux = self._run_vision(my_inputs)
+                if self._vision_frozen:
+                    # A frozen ViT is a pure feature extractor: build no graph.
+                    with torch.no_grad():
+                        macro_main, macro_aux = self._run_vision(my_inputs)
+                else:
+                    macro_main, macro_aux = self._run_vision(my_inputs)
         else:
             macro_main, macro_aux = None, None
 
@@ -250,8 +260,15 @@ class ColocatedMIMOModel(MegatronModule):
                 entries.append(_empty_entry(token_counts[i]))
 
         # Broadcast each microbatch's output from its owner rank and mark the
-        # received buffers requires_grad (see exchange_macro_outputs).
-        exchange_macro_outputs(entries, self.language_pg, self.vit_batch_factor)
+        # received buffers requires_grad (see exchange_macro_outputs).  A frozen
+        # ViT skips the marking: no grad hooks are registered, so the exhausted
+        # macro batch is dropped silently and the delayed backward never runs.
+        exchange_macro_outputs(
+            entries,
+            self.language_pg,
+            self.vit_batch_factor,
+            mark_requires_grad=not self._vision_frozen,
+        )
         return entries
 
     def _vision_backward_fn(self, macro) -> None:
@@ -271,7 +288,10 @@ class ColocatedMIMOModel(MegatronModule):
 
         gradients = macro.gradients
         macro_main, macro_aux = macro.ctx
-        if macro_main is None:
+        if macro_main is None or not macro_main.requires_grad:
+            # No graph through the ViT outputs (frozen ViT): nothing to back
+            # through.  Normally unreachable — frozen macro batches register no
+            # hooks and are dropped on exhaustion — kept as a safeguard.
             return
 
         assert dist.get_world_size(self.vision_pg.tp) == 1, (

@@ -79,7 +79,7 @@ def get_my_microbatch_range(language_pg, num_micro):
     return lo, lo + per_rank
 
 
-def exchange_macro_outputs(entries, language_pg, vit_batch_factor):
+def exchange_macro_outputs(entries, language_pg, vit_batch_factor, mark_requires_grad=True):
     """Exchange per-microbatch vision outputs inside the language TP group.
 
     Each microbatch entry is computed by its owner rank (see
@@ -96,6 +96,10 @@ def exchange_macro_outputs(entries, language_pg, vit_batch_factor):
             dicts, one per microbatch in the macro batch; modified in place.
         language_pg: Language module process group collection.
         vit_batch_factor: Microbatches per macro batch (owner mapping).
+        mark_requires_grad: Whether to mark served tensors requires_grad.
+            Pass False when the ViT is frozen: without hooks no gradients are
+            expected, the exhausted macro batch is dropped silently, and the
+            delayed ViT backward never triggers.
     """
     for forward_idx, entry in enumerate(entries):
         src_rank = get_source_vision_rank(language_pg, forward_idx, vit_batch_factor)
@@ -106,6 +110,8 @@ def exchange_macro_outputs(entries, language_pg, vit_batch_factor):
                 broadcast_to_language_tp(f, language_pg, src_rank) for f in entry["aux"]
             ]
     for entry in entries:
+        if not mark_requires_grad:
+            break
         if entry["main"] is not None:
             entry["main"].requires_grad_(True)
         if entry["aux"] is not None:
