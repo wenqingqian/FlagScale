@@ -1,11 +1,6 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 
-"""Per-module DDP and optimizer helpers for colocated MIMO deployment.
-
-This module is intentionally kept separate from the generic MIMO scheduler so
-that training frameworks can import only the optimizer-related helpers without
-dragging in model-specific code.
-"""
+"""Per-module DDP and optimizer helpers for colocated MIMO deployment."""
 
 import dataclasses
 import inspect

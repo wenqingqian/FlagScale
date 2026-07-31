@@ -2,9 +2,7 @@
 
 """Colocated cross-rank utilities for MIMO module communication.
 
-In colocated mode the vision/language rank sets overlap, so inter-module
-communication uses intra-node P2P/broadcast.  The helpers here assume the
-deterministic rank ordering produced by
+The helpers here assume the deterministic rank ordering produced by
 ``flagscale.models.mimo.hetero_pg_utils``.
 """
 
@@ -41,10 +39,6 @@ def get_source_vision_rank(language_pg, forward_idx_in_round, vit_batch_factor):
     (see ``get_my_microbatch_range``): TP member j computes and supplies the
     microbatches in its slice, so this mapping is the actual data ownership,
     not a load-balancing choice.
-
-    Example (world size 8, language TP=2, vit_batch_factor=2):
-      - language TP group {2, 3} has ViT ranks 2 and 3.
-      - forward 0 in the round belongs to ViT rank 2; forward 1 to ViT rank 3.
 
     Example (language TP=2, vit_batch_factor=4):
       - Each ViT rank owns enough samples for two LLM forwards.
