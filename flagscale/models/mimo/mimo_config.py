@@ -75,6 +75,11 @@ def validate_mimo_config(
 
     Returns the validated ``vit_batch_factor``.
     """
+    assert getattr(args, "rampup_batch_size", None) is None, (
+        "Colocated MIMO does not support --rampup-batch-size: the scheduler "
+        "requires num_microbatches to stay divisible by vit_batch_factor "
+        "throughout training, which a batch-size ramp cannot guarantee."
+    )
     assert not (args.overlap_param_gather or args.overlap_grad_reduce), (
         "MIMO per-module DDP overlap is not yet validated; "
         "disable --overlap-param-gather and --overlap-grad-reduce."

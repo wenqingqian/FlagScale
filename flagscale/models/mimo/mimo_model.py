@@ -292,6 +292,8 @@ class ColocatedMIMOModel(MegatronModule):
             # No graph through the ViT outputs (frozen ViT): nothing to back
             # through.  Normally unreachable — frozen macro batches register no
             # hooks and are dropped on exhaustion — kept as a safeguard.
+            # Don't let an un-backwarded macro pin the ViT graph.
+            macro.ctx = None
             return
 
         assert dist.get_world_size(self.vision_pg.tp) == 1, (
@@ -312,6 +314,9 @@ class ColocatedMIMOModel(MegatronModule):
 
         main_grad = _assemble_slice_grad("main")
         if main_grad is None:
+            # Nothing to back through; still release the graph so an
+            # un-backwarded macro does not pin the ViT activations.
+            macro.ctx = None
             return
 
         # Cast gradients back to the ViT output dtype (no-op when the fp32 grad cache is off).
@@ -348,3 +353,18 @@ class ColocatedMIMOModel(MegatronModule):
                 self.scheduler.register_visual_grad_hook(f, f"aux_{i}") for i, f in enumerate(aux)
             ]
         return main, aux
+
+    # ------------------------------------------------------------------
+    # Exit-time cleanup.
+    # ------------------------------------------------------------------
+    def release_training_state(self) -> None:
+        """Release scheduler-held training state ahead of an exit checkpoint save.
+
+        Delegates to the scheduler, which asserts every macro batch is fully
+        consumed and gradient-free before dropping it.
+        """
+        self.scheduler.release()
+
+    def drop_completed_macros(self) -> None:
+        """Drop fully consumed, gradient-free macro batches (pre-save cleanup)."""
+        self.scheduler.drop_completed_macros()

@@ -118,14 +118,30 @@ class MIMOMicrobatchScheduler:
         macro.vision_outputs = list(outputs)
         self._macros.append(macro)
 
+    def drop_completed_macros(self) -> None:
+        """Drop exhausted macro batches that registered no gradient hooks.
+
+        Mirrors the leading-drop in ``advance``; callers may invoke it between
+        iterations (e.g. before a periodic checkpoint save) to release the
+        trailing no-hook macro's buffers early.  Macros with outstanding
+        gradients are never dropped.
+        """
+        while (
+            self._macros and self._macros[0].exhausted() and not any(self._macros[0].expected_keys)
+        ):
+            macro = self._macros.popleft()
+            # The serving pointer must not outlive its macro (same invariant
+            # as in ``_collect_grad``).
+            if self._serving is macro:
+                self._serving = None
+            # Break the ViT graph reference held by un-backwarded macros.
+            macro.ctx = None
+
     def advance(self) -> tuple[int, dict[str, Any], dict[str, Any]]:
         """Return the next microbatch index, batch dict, and vision output dict."""
         # Drop exhausted macro batches that will never produce gradients
         # (nothing was registered on them, e.g. ranks without a vision module).
-        while (
-            self._macros and self._macros[0].exhausted() and not any(self._macros[0].expected_keys)
-        ):
-            self._macros.popleft()
+        self.drop_completed_macros()
 
         if self.need_new_macro_batch():
             raise RuntimeError(
@@ -181,6 +197,11 @@ class MIMOMicrobatchScheduler:
             # Macro batches complete in FIFO order.
             assert macro is self._macros[0], "macro batch completed out of order"
             self._macros.popleft()
+            # The serving pointer must not outlive its macro: it would pin the
+            # batch tensors and gradients until the next advance.  It is re-set
+            # by the next advance() before any hook registration.
+            if self._serving is macro:
+                self._serving = None
 
     def _macro_ready(self, macro: _MacroBatch) -> bool:
         """Check whether every registered key for every served microbatch is present.
@@ -199,3 +220,29 @@ class MIMOMicrobatchScheduler:
             if grads is None or set(grads.keys()) != expected:
                 return False
         return True
+
+    # ------------------------------------------------------------------
+    # Exit-time cleanup.
+    # ------------------------------------------------------------------
+    def release(self) -> None:
+        """Drop scheduler-held training state ahead of an exit checkpoint save.
+
+        The serving pointer and any residual macro batch keep multi-GiB GPU
+        buffers (batch tensors, ViT outputs, gradients) alive through the
+        save.  At exit time every macro batch is fully consumed and
+        gradient-free, so this normally only drops the serving pointer; the
+        assertions below guard against ever dropping a macro that still has
+        unconsumed microbatches or outstanding gradients.
+        """
+        for macro in self._macros:
+            assert macro.exhausted(), (
+                "cannot release training state while a macro batch still has "
+                "unconsumed microbatches (gradients would be lost)"
+            )
+            assert not any(macro.expected_keys), (
+                "cannot release training state while gradients are still outstanding"
+            )
+            # Break the ViT graph reference held by un-backwarded macros.
+            macro.ctx = None
+        self._macros.clear()
+        self._serving = None
