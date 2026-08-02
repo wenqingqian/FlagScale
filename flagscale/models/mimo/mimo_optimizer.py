@@ -238,17 +238,11 @@ class ChainedOptimizer:
     forwarding here.
     """
 
-    def __init__(self, optimizers: list, save_gather_use_gloo: bool = True):
+    def __init__(self, optimizers: list):
         assert len(optimizers) > 0, "ChainedOptimizer requires at least one optimizer"
         self.optimizers = optimizers
         # Expose the same attribute Megatron uses for dist-optimizer chaining.
         self.chained_optimizers = optimizers
-        # Gather the parameter state on gloo/CPU at save time by default to
-        # avoid allocating the multi-GiB GPU buffers that can OOM a large
-        # exit save; NCCL/GPU gather remains available via
-        # --no-mimo-save-gather-use-gloo.  Saves run at most once per
-        # save_interval, so the slower gloo/CPU gather is off the hot path.
-        self.save_gather_use_gloo = save_gather_use_gloo
 
     def zero_grad(self, set_to_none: bool = True):
         for opt in self.optimizers:
@@ -354,9 +348,9 @@ class ChainedOptimizer:
         """Save each wrapped optimizer's parameter state to a separate file.
 
         The per-module optimizers live in different data-parallel groups.  The
-        state is gathered on each group's DP rank 0 before writing; by default
-        the gather runs on gloo/CPU (see ``save_gather_use_gloo``) so the save
-        does not allocate multi-GiB GPU buffers.
+        state is gathered on gloo/CPU (Megatron's default) before writing on
+        each group's DP rank 0, so the save does not allocate multi-GiB GPU
+        buffers.
         """
         if len(self.optimizers) == 1:
             self.optimizers[0].save_parameter_state(filename)
@@ -369,18 +363,7 @@ class ChainedOptimizer:
                 continue
             opt_filename = self._per_optimizer_filename(filename, idx)
             if inner is not None:
-                # The gloo/CPU gather needs gloo process groups; fall back to
-                # the NCCL/GPU gather when they are disabled instead of
-                # crashing at save time.
-                use_gloo = (
-                    self.save_gather_use_gloo and inner.data_parallel_group_gloo is not None
-                )
-                if self.save_gather_use_gloo and not use_gloo:
-                    print_rank_0(
-                        "MIMO: gloo process groups unavailable, falling back to the "
-                        "NCCL/GPU parameter-state gather for this optimizer."
-                    )
-                state = inner.get_parameter_state_dp_zero(use_gloo_comm=use_gloo)
+                state = inner.get_parameter_state_dp_zero(use_gloo_comm=True)
                 if state is not None:
                     torch.save(state, opt_filename)
             else:
@@ -484,7 +467,4 @@ def build_mimo_optimizer(config, config_overrides, mimo_model, args):
 
     if len(optimizers) == 1:
         return optimizers[0]
-    return ChainedOptimizer(
-        optimizers,
-        save_gather_use_gloo=getattr(args, "mimo_save_gather_use_gloo", True),
-    )
+    return ChainedOptimizer(optimizers)

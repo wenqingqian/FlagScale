@@ -674,18 +674,6 @@ def add_mimo_args(parser):
         default=False,
         help="Accumulate visual microbatch gradients in fp32 inside the MIMO scheduler.",
     )
-    group.add_argument(
-        "--no-mimo-save-gather-use-gloo",
-        dest="mimo_save_gather_use_gloo",
-        action="store_false",
-        default=True,
-        help="Gather the MIMO optimizer parameter state on GPU (NCCL) instead of "
-        "the default gloo/CPU gather when saving checkpoints. The gloo gather "
-        "avoids the multi-GiB GPU buffers that can OOM a large exit save, and "
-        "saves run at most once per --save-interval, off the training hot path; "
-        "pass this flag only when the gloo gather is too slow and GPU memory is "
-        "sufficient.",
-    )
     return parser
 
 
