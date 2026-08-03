@@ -1513,11 +1513,9 @@ def pretrain(
         if not args.auto_tune: ########## FlagScale Add ##########
             if not args.skip_train and args.save and iteration != 0 and iteration % args.save_interval != 0:
                 ########## FlagScale Begin ##########
-                # Release scheduler-held training state (e.g. the pinned final MIMO
-                # macro batch) and cached GPU memory so the exit checkpoint save has
-                # headroom, mirroring save_checkpoint_and_time's pre-save cleanup.
-                release_mimo_training_state(model)
-                cur_platform.empty_cache()
+                if args.use_mimo:  # Give the exit save extra GPU headroom.
+                    release_mimo_training_state(model)
+                    cur_platform.empty_cache()
                 ########## FlagScale End ##########
                 save_checkpoint(
                     iteration,
@@ -2919,10 +2917,8 @@ def save_checkpoint_and_time(
         if hasattr(model_chunk, 'free_overlap_buffers'):
             model_chunk.free_overlap_buffers()
     ########## FlagScale Begin ##########
-    # Release the MIMO scheduler's trailing no-hook macro batch (e.g.
-    # frozen-ViT outputs) so it is not pinned through the save.  Safe while
-    # training continues: macros with outstanding gradients are never dropped.
-    drop_mimo_completed_macros(model)
+    if args.use_mimo:  # Don't pin the MIMO scheduler's trailing no-hook macro through the save.
+        drop_mimo_completed_macros(model)
     ########## FlagScale End ##########
     cur_platform.empty_cache()
 
