@@ -17,7 +17,11 @@ from .mimo_optimizer import (
     set_mimo_force_all_reduce,
     setup_mimo_ddp,
 )
-from .mimo_utils import compute_microbatch_token_counts
+from .mimo_utils import (
+    compute_microbatch_token_counts,
+    drop_mimo_completed_macros,
+    release_mimo_training_state,
+)
 from .parallel_state_ctx import switch_parallel_state
 
 __all__ = [
@@ -31,4 +35,6 @@ __all__ = [
     "build_mimo_optimizer",
     "set_mimo_force_all_reduce",
     "compute_microbatch_token_counts",
+    "drop_mimo_completed_macros",
+    "release_mimo_training_state",
 ]

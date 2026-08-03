@@ -4,12 +4,38 @@
 
 Placement rule: only stateless tensor/layout utilities live here — no
 collectives (those go to ``mimo_bridge``), no scheduling state (that goes to
-``mimo_scheduler``), no Megatron dependencies.
+``mimo_scheduler``), no Megatron dependencies.  Duck-typed dispatch over the
+training loop's model list also qualifies: it holds no state of its own.
 """
 
 from typing import Any
 
 import torch
+
+
+def release_mimo_training_state(model) -> None:
+    """Release scheduler-held training state on every MIMO chunk.
+
+    Called by the training loop before an exit checkpoint save so the save
+    has maximum GPU headroom.  Duck-typed: non-MIMO chunks simply lack
+    ``release_training_state``.  Only valid at end of training — the release
+    asserts no macro batch has outstanding gradients.
+    """
+    for model_chunk in model:
+        if hasattr(model_chunk, "release_training_state"):
+            model_chunk.release_training_state()
+
+
+def drop_mimo_completed_macros(model) -> None:
+    """Drop exhausted, gradient-free MIMO macro batches before a periodic save.
+
+    Safe while training continues: macros with outstanding gradients are
+    never dropped, and the next ``advance()`` re-establishes serving state.
+    Duck-typed like ``release_mimo_training_state``.
+    """
+    for model_chunk in model:
+        if hasattr(model_chunk, "drop_completed_macros"):
+            model_chunk.drop_completed_macros()
 
 
 def compute_microbatch_token_counts(
