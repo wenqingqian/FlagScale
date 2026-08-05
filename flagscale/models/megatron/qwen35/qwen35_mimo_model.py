@@ -212,8 +212,8 @@ class Qwen35MIMOModel(ColocatedMIMOModel):
                 # needs the batch up front and therefore advances externally).
                 _, _, vision_output = self.scheduler.advance()
 
-            # Detach visual tensors from the ViT graph and capture gradients
-            # for the delayed ViT backward.
+            # Capture gradients on the served vision outputs for the delayed
+            # ViT backward.
             vision_embeds, deepstack_feature_lists = self._register_vision_output_hooks(
                 vision_output
             )

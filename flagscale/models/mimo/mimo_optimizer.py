@@ -232,8 +232,6 @@ def _optimizer_state_dict(opt, is_loading: bool = False):
 class ChainedOptimizer:
     """Chain multiple Megatron optimizers so the training loop sees one object.
 
-    This wrapper deliberately does **not** implement ``__getattr__`` to avoid
-    silently forwarding checkpoint-related calls to only the first optimizer.
     If Megatron's training loop needs additional methods, add explicit
     forwarding here.
     """
@@ -340,8 +338,7 @@ class ChainedOptimizer:
         A MoE module optimizer is itself a chained optimizer (one
         ``DistributedOptimizer`` per parameter partition: dense, experts, ...).
         Each inner optimizer owns disjoint fp32 master-parameter state, so all
-        of them must be saved/loaded — taking only ``chained_optimizers[0]``
-        silently drops the expert master weights.
+        of them must be saved/loaded.
         """
         if hasattr(opt, "chained_optimizers") and opt.chained_optimizers:
             return [

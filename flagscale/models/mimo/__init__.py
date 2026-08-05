@@ -1,12 +1,6 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 
-"""Generic MIMO building blocks for colocated deployment.
-
-The package exports only the symbols consumed directly by its three external
-audiences: training entries (e.g. ``train_qwen35.py``), the training loop
-(``training.py``), and model adapters (e.g. ``qwen35_mimo_model.py``).
-Intra-package collaboration imports from submodules directly.
-"""
+"""Generic MIMO building blocks for colocated deployment."""
 
 from .hetero_pg_utils import build_colocated_pg_collections
 from .mimo_config import ModuleParallelismConfig, validate_mimo_config

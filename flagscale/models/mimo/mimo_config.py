@@ -35,13 +35,12 @@ def compute_vit_batch_factor(
     number of samples each vision DP entity processes in one forward, the
     vision analog of the LM ``micro_batch_size`` (mbs).  ``vit_batch_factor``
     (vbf) is the derived relation ``(vision_dp * vbs) / (language_dp * mbs)`` —
-    how many LLM microbatches one ViT macro forward serves.  vbf must be > 1;
-    vbf == 1 is rejected by ``validate_mimo_config``.
+    how many LLM microbatches one ViT macro forward serves.
     """
     vision_samples = vision_data_parallel_size * vision_micro_batch_size
     language_samples = language_data_parallel_size * language_micro_batch_size
-    # Reject silent floor-division truncation (e.g. 16 // 12) that would
-    # silently shrink the effective vit_batch_factor.
+    # Reject floor-division truncation that would silently shrink the
+    # effective vit_batch_factor.
     assert vision_samples % language_samples == 0, (
         f"vision_dp * vision_micro_batch_size ({vision_samples}) must be a multiple of "
         f"language_dp * micro_batch_size ({language_samples}). "
@@ -64,14 +63,7 @@ def validate_mimo_config(
 ) -> int:
     """Validate all model-agnostic MIMO configuration constraints in one place.
 
-    Covers: DDP overlap flags (overlap_param_gather/overlap_grad_reduce),
-    legacy-torch ckpt format, CP == 1 for both modules, language PP >= 1 with
-    vision PP following it (grid artifact; the vision module itself is never
-    pipelined and lives only on language first-stage ranks), vision TP == 1,
-    vit_batch_factor > 1, and vit_batch_factor % language_tp == 0; each
-    assert message states its own reason.  Training entries must call this
-    once before constructing the MIMO model; do not duplicate these checks
-    elsewhere.
+    Training entries must call this once before constructing the MIMO model.
 
     Returns the validated ``vit_batch_factor``.
     """

@@ -22,11 +22,6 @@ def _owner_offset(forward_idx_in_round, vit_batch_factor, language_tp_size):
 
     The macro batch is split into whole microbatches across the language TP
     group: TP member j owns microbatches ``[j*vbf/tp, (j+1)*vbf/tp)``.
-    ``get_source_vision_rank`` (via this helper) and
-    ``get_my_microbatch_range`` are the forward and inverse views of that same
-    mapping; each computes its side directly, and the two are kept
-    mathematically equivalent (``owner(i)=j`` iff ``i`` lies in member j's
-    range).
     """
     return (forward_idx_in_round * language_tp_size // vit_batch_factor) % language_tp_size
 
@@ -37,12 +32,10 @@ def get_source_vision_rank(language_pg, forward_idx_in_round, vit_batch_factor):
     Within a language TP group, every member is also a ViT rank because vision
     TP size is 1.  The group's macro batch is split into whole microbatches
     (see ``get_my_microbatch_range``): TP member j computes and supplies the
-    microbatches in its slice, so this mapping is the actual data ownership,
-    not a load-balancing choice.
+    microbatches in its slice.
 
-    Example (language TP=2, vit_batch_factor=4):
-      - Each ViT rank owns enough samples for two LLM forwards.
-      - forwards 0,1 belong to rank 2; forwards 2,3 to rank 3.
+    Example (language TP=2, vit_batch_factor=4): forwards 0,1 belong to
+    TP member 0; forwards 2,3 to TP member 1.
     """
     assert forward_idx_in_round >= 0, (
         f"forward_idx_in_round must be non-negative, got {forward_idx_in_round}"
@@ -66,7 +59,7 @@ def get_my_microbatch_range(language_pg, num_micro):
     TP rank j owns ``[j*num/tp, (j+1)*num/tp)``.  Each rank's ViT forward
     therefore covers exactly ``vision_micro_batch_size`` samples (vbs) and
     the TP group jointly covers the ``vbf * mbs`` samples of one entity's
-    macro batch — no duplicated ViT compute within the group.
+    macro batch.
     """
     tp_size = max(1, dist.get_world_size(language_pg.tp))
     assert num_micro % tp_size == 0, (

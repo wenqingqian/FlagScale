@@ -2,10 +2,9 @@
 
 """Stateless pure-function helpers for colocated MIMO.
 
-Placement rule: only stateless tensor/layout utilities live here — no
-collectives (those go to ``mimo_bridge``), no scheduling state (that goes to
-``mimo_scheduler``), no Megatron dependencies.  Duck-typed dispatch over the
-training loop's model list also qualifies: it holds no state of its own.
+Placement rule: only stateless tensor/layout utilities and duck-typed
+dispatch over the training loop's model list live here — no collectives, no
+scheduling state, no Megatron dependencies.
 """
 
 from typing import Any

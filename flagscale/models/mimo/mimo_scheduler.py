@@ -12,8 +12,7 @@ Design notes
   relies on the owning model to provide ``vision_forward_fn`` and
   ``vision_backward_fn`` callbacks.
 * Split visual tensors are detached before being injected into the language
-  model.  This keeps the ViT computation graph alive without using
-  ``retain_graph=True`` during LLM backward.
+  model, keeping the ViT computation graph alive for the delayed backward.
 * Gradients accumulated on the detached splits are concatenated and handed
   back to ``vision_backward_fn`` once every microbatch in the macro batch has
   produced a gradient.

@@ -127,10 +127,7 @@ class ColocatedMIMOModel(MegatronModule):
 
         Assembles a new ViT macro batch when the current one is exhausted.  All
         scheduler orchestration lives behind this method so that
-        ``forward_step`` never touches the scheduler directly.  The batch dict
-        must be returned to the caller (Megatron builds the model inputs and
-        the loss closure from it), which is why the advance cannot happen
-        inside ``forward``.
+        ``forward_step`` never touches the scheduler directly.
         """
         if self.scheduler.need_new_macro_batch():
             get_batch_fn = self._dedup_get_batch(get_batch_fn)
@@ -208,8 +205,6 @@ class ColocatedMIMOModel(MegatronModule):
         if token_counts is None:
             return [{"main": None, "aux": None} for _ in batches]
 
-        # Each rank computes only its own slice of the macro batch; the TP
-        # group jointly covers all microbatches.
         lo, hi = get_my_microbatch_range(self.language_pg, len(batches))
         my_inputs = self._extract_vision_inputs(batches[lo:hi])
         if my_inputs is not None:
@@ -225,9 +220,8 @@ class ColocatedMIMOModel(MegatronModule):
 
         macro.ctx = (macro_main, macro_aux)
 
-        # Assemble the full per-microbatch output list: entries in this rank's
-        # own slice hold locally computed tensors; other entries are empty
-        # buffers that the exchange below fills from their owner ranks.
+        # Entries outside this rank's slice are empty receive buffers that
+        # the exchange below fills from their owner ranks.
         hidden_size = self._embed_hidden_size()
         dtype = macro_main.dtype if macro_main is not None else self.config.params_dtype
         device = torch.cuda.current_device()
@@ -259,10 +253,9 @@ class ColocatedMIMOModel(MegatronModule):
             else:
                 entries.append(_empty_entry(token_counts[i]))
 
-        # Broadcast each microbatch's output from its owner rank and mark the
-        # received buffers requires_grad (see exchange_macro_outputs).  A frozen
-        # ViT skips the marking: no grad hooks are registered, so the exhausted
-        # macro batch is dropped silently and the delayed backward never runs.
+        # A frozen ViT skips the requires_grad marking: no hooks are
+        # registered, so the exhausted macro batch is dropped silently and the
+        # delayed ViT backward never runs.
         exchange_macro_outputs(
             entries,
             self.language_pg,
@@ -289,10 +282,8 @@ class ColocatedMIMOModel(MegatronModule):
         gradients = macro.gradients
         macro_main, macro_aux = macro.ctx
         if macro_main is None or not macro_main.requires_grad:
-            # No graph through the ViT outputs (frozen ViT): nothing to back
-            # through.  Normally unreachable — frozen macro batches register no
-            # hooks and are dropped on exhaustion — kept as a safeguard.
-            # Don't let an un-backwarded macro pin the ViT graph.
+            # No graph through the ViT outputs (frozen ViT): release the macro
+            # so an un-backwarded batch does not pin the ViT graph.
             macro.ctx = None
             return
 
@@ -314,8 +305,8 @@ class ColocatedMIMOModel(MegatronModule):
 
         main_grad = _assemble_slice_grad("main")
         if main_grad is None:
-            # Nothing to back through; still release the graph so an
-            # un-backwarded macro does not pin the ViT activations.
+            # No gradients for this slice; release the graph so the macro does
+            # not pin the ViT activations.
             macro.ctx = None
             return
 
