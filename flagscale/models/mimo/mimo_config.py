@@ -124,6 +124,19 @@ def validate_mimo_config(
         f"language ep ({language_ep}) must divide language dp "
         f"({language_parallelism.data_parallel_size})."
     )
+    # The process-group builder aliases the expert-TP group to the module TP
+    # group (hetero_pg_utils), so a configured ETP different from the language
+    # TP would be silently ignored.  Megatron defaults ETP to TP when unset,
+    # so any mismatch here is an explicit user setting and must be rejected.
+    language_etp = getattr(args, "expert_tensor_parallel_size", None)
+    assert language_etp is None or language_etp == (
+        language_parallelism.tensor_model_parallel_size
+    ), (
+        f"Colocated MIMO aliases the expert-TP group to the language TP group, "
+        f"so expert_tensor_parallel_size ({language_etp}) must equal the language "
+        f"tensor_model_parallel_size ({language_parallelism.tensor_model_parallel_size}); "
+        f"leave it unset (Megatron then defaults it to TP) or set it equal."
+    )
 
     vision_micro_batch_size = getattr(args, "vision_micro_batch_size", args.micro_batch_size)
     vit_batch_factor = compute_vit_batch_factor(

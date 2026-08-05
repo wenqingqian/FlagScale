@@ -334,15 +334,24 @@ class ChainedOptimizer:
         return f"{base}_{index}{ext}"
 
     @staticmethod
-    def _unwrap_distributed_optimizer(opt):
-        """Return the underlying ``DistributedOptimizer`` if one exists."""
+    def _unwrap_distributed_optimizers(opt):
+        """Return ALL underlying ``DistributedOptimizer``s of ``opt``.
+
+        A MoE module optimizer is itself a chained optimizer (one
+        ``DistributedOptimizer`` per parameter partition: dense, experts, ...).
+        Each inner optimizer owns disjoint fp32 master-parameter state, so all
+        of them must be saved/loaded — taking only ``chained_optimizers[0]``
+        silently drops the expert master weights.
+        """
         if hasattr(opt, "chained_optimizers") and opt.chained_optimizers:
-            inner = opt.chained_optimizers[0]
-            if hasattr(inner, "get_parameter_state_dp_zero"):
-                return inner
+            return [
+                inner
+                for inner in opt.chained_optimizers
+                if hasattr(inner, "get_parameter_state_dp_zero")
+            ]
         if hasattr(opt, "get_parameter_state_dp_zero"):
-            return opt
-        return None
+            return [opt]
+        return []
 
     def save_parameter_state(self, filename: str):
         """Save each wrapped optimizer's parameter state to a separate file.
@@ -351,23 +360,50 @@ class ChainedOptimizer:
         state is gathered on gloo/CPU (Megatron's default) before writing on
         each group's DP rank 0, so the save does not allocate multi-GiB GPU
         buffers.
+
+        A module optimizer with a single ``DistributedOptimizer`` keeps the
+        historical single-state file format.  A MoE module optimizer (chained
+        over dense/expert partitions) writes a list of states — one entry per
+        inner ``DistributedOptimizer``, ``None`` where this rank holds nothing
+        or the inner optimizer is a stub — mirroring Megatron's own
+        ``ChainedOptimizer.save_parameter_state``.
         """
         if len(self.optimizers) == 1:
             self.optimizers[0].save_parameter_state(filename)
             return
         for idx, opt in enumerate(self.optimizers):
-            inner = self._unwrap_distributed_optimizer(opt)
-            if inner is not None and getattr(inner, "is_stub_optimizer", False):
-                # Stub DistributedOptimizer (all its params frozen): no
-                # parameter state exists and its DP group is uninitialized.
-                continue
             opt_filename = self._per_optimizer_filename(filename, idx)
-            if inner is not None:
+            inners = self._unwrap_distributed_optimizers(opt)
+            if not inners:
+                opt.save_parameter_state(opt_filename)
+                continue
+            if len(inners) == 1:
+                inner = inners[0]
+                if getattr(inner, "is_stub_optimizer", False):
+                    # Stub DistributedOptimizer (all its params frozen): no
+                    # parameter state exists and its DP group is uninitialized.
+                    continue
                 state = inner.get_parameter_state_dp_zero(use_gloo_comm=True)
                 if state is not None:
                     torch.save(state, opt_filename)
-            else:
-                opt.save_parameter_state(opt_filename)
+                continue
+            states = []
+            save_states = False
+            for inner in inners:
+                if getattr(inner, "is_stub_optimizer", False):
+                    # Stub: no parameter state; keep the placeholder so entry
+                    # positions stay aligned with the load side.
+                    states.append(None)
+                    continue
+                state = inner.get_parameter_state_dp_zero(use_gloo_comm=True)
+                if inner.data_parallel_group.rank() == 0:
+                    states.append(state)
+                    save_states = True
+                else:
+                    assert state is None
+                    states.append(None)
+            if save_states:
+                torch.save(states, opt_filename)
 
     def load_parameter_state(self, filename: str, *, update_legacy_format: bool = False):
         """Load each wrapped optimizer's parameter state from its own file."""
@@ -377,21 +413,41 @@ class ChainedOptimizer:
             )
             return
         for idx, opt in enumerate(self.optimizers):
-            inner = self._unwrap_distributed_optimizer(opt)
-            if inner is not None and getattr(inner, "is_stub_optimizer", False):
-                # Stub DistributedOptimizer (all its params frozen): nothing
-                # was saved for it and its DP group is uninitialized.
-                continue
             opt_filename = self._per_optimizer_filename(filename, idx)
-            if inner is not None:
+            inners = self._unwrap_distributed_optimizers(opt)
+            if not inners:
+                opt.load_parameter_state(opt_filename, update_legacy_format=update_legacy_format)
+                continue
+            if len(inners) == 1:
+                inner = inners[0]
+                if getattr(inner, "is_stub_optimizer", False):
+                    # Stub DistributedOptimizer (all its params frozen): nothing
+                    # was saved for it and its DP group is uninitialized.
+                    continue
                 state = None
                 if inner.data_parallel_group.rank() == 0:
                     state = torch.load(opt_filename)
                 inner.load_parameter_state_from_dp_zero(
                     state, update_legacy_format=update_legacy_format
                 )
-            else:
-                opt.load_parameter_state(opt_filename, update_legacy_format=update_legacy_format)
+                continue
+            states = None
+            for inner_idx, inner in enumerate(inners):
+                if getattr(inner, "is_stub_optimizer", False):
+                    # Stub: nothing was saved for it (None placeholder).
+                    continue
+                # Lazy loading: the state file is read only on DP rank 0 (each
+                # inner optimizer has its own DP group).
+                if inner.data_parallel_group.rank() == 0 and states is None:
+                    states = torch.load(opt_filename)
+                    assert isinstance(states, list), (
+                        "checkpoint uses the legacy single-state format, which cannot contain MoE "
+                        "expert state; this checkpoint predates the MoE resume fix and cannot be resumed"
+                    )
+                state = states[inner_idx] if states else None
+                inner.load_parameter_state_from_dp_zero(
+                    state, update_legacy_format=update_legacy_format
+                )
 
     @property
     def param_groups(self):
