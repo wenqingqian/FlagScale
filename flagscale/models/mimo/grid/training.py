@@ -122,8 +122,9 @@ def get_grid_batch_preparer(key: str | None = None):
 def prepare_grid_batch(batch: dict[str, Any], grid_state: GridTrainingState) -> dict[str, Any]:
     """Prepare the global micro-batch for this rank's grid module role.
 
-    Every data-loading rank samples the *same* global micro-batch
-    (``args.data_parallel_size == 1``, broadcast over the world TP group).
+    Every data-loading rank samples the *same* global micro-batch: the
+    grid sampler shard covers the whole WORLD group
+    (``args.data_parallel_size == 1``; see ``get_dataloader_shard_policy``).
     Delegates to the batch preparer registered by the model's grid provider
     (see :func:`register_grid_batch_preparer`), which applies the module-local
     DP slice and assembles the exact kwargs the model forward accepts.

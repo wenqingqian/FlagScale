@@ -73,11 +73,10 @@ def build_pg_collection_for_schedule(
 
     Uses ``MultiModuleProcessGroupCollection`` (it allows missing LLM PG on
     encoder-only ranks), built directly from the filtered non-None
-    collections.  There is deliberately NO try/except fallback: a genuine
-    configuration error must propagate instead of silently downgrading to a
-    plain list of collections, which the schedule consumes with different
-    semantics - exactly the class of silent failure that rots distributed
-    training.  IMPORTANT: uses pg_collections directly; do NOT rebuild PGs.
+    collections.  Configuration errors must propagate: do NOT add a
+    try/except fallback that silently downgrades to a plain list of
+    collections (the schedule consumes that with different semantics).
+    IMPORTANT: uses pg_collections directly; do NOT rebuild PGs.
 
     Raises:
         ValueError: If no module has a non-None collection on this rank (a
@@ -155,12 +154,11 @@ def finalize_model_grads_multimodule(
     ``force_all_reduce`` flag is forwarded to MCore's standard finalizer for
     each active module.
 
-    When encoder DP > LLM DP (heterogeneous), the LLM's loss normalization
-    divides by tokens for ALL samples it processes, but after non-colocated
-    fan-out each encoder DP rank only carries gradient for
-    (encoder_dp / llm_dp) fewer samples, so encoder gradients are too small
-    by that factor.  We compensate after DDP finalization by scaling encoder
-    gradients back up.
+    When a module's DP differs from the language DP (heterogeneous grids),
+    its DDP mean normalizes over a different sample count than the language
+    loss; gradients are rescaled after finalization — by the global token
+    total on the per-token-loss path, by module_dp / llm_dp on the mean
+    path — to stay commensurate.
 
     Args:
         model: Model list (passed by schedule, ignored - we use module_to_grid_tuple).
@@ -239,9 +237,9 @@ def finalize_model_grads_multimodule(
         #
         # Loss was already divided by num_tokens and num_microbatches in the
         # forward pass.  DDP pre-scales gradients by 1/dp_size, producing an
-        # effective MEAN across DP ranks.  When encoder_dp > llm_dp the
-        # encoder mean is over fewer samples, making encoder gradients too
-        # small by encoder_dp / llm_dp.  Compensate after finalization.
+        # effective MEAN over each module's own DP group.  A module whose DP
+        # differs from the language DP normalizes over a different sample
+        # count; rescale by module_dp / llm_dp (either direction).
         for module, grid in module_to_grid_tuple:
             if module is not None and is_current_rank_in_grid(grid):
                 _, module_pg = _find_module(grid)

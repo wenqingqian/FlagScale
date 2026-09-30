@@ -204,9 +204,10 @@ def _validate_config(
             f"language DP={language.data_parallel_size} (fail-fast)."
         )
 
-    # Only the trivial bound holds (at least one layer per stage); the uneven
-    # split is MCore's, computed by
-    # parallelism.compute_pipeline_layer_split.
+    # Only the trivial bound holds here (at least one layer per stage); the
+    # uneven per-stage counts are computed by
+    # parallelism.compute_pipeline_layer_split and applied through MCore's
+    # explicit first/last-stage layer fields.
     if num_layers is not None:
         if isinstance(num_layers, bool) or not isinstance(num_layers, int) or num_layers < 1:
             raise ValueError(f"num_layers must be a positive integer, got {num_layers!r}.")
@@ -273,7 +274,7 @@ class Qwen35VisionSubmodules(VisionModalitySubmodules):
     The ViT's internal multimodal projector already maps the merged patch
     embeddings to the language hidden size, so no ``input_projections`` are
     needed.  :meth:`encode` stashes the Qwen3-VL deepstack auxiliary feature
-    lists on ``last_deepstack_features`` (captured, not dropped) for the owning
+    lists on ``last_deepstack_features`` for the owning
     model to inject into the language forward (colocated) or reject at build
     time (non-colocated: the bridge has no auxiliary channel).
     """
@@ -665,7 +666,7 @@ class Qwen35GridMIMOModel(MimoModel):
             if combined_embeddings is not None:
                 combined_embeddings = combined_embeddings.transpose(0, 1).contiguous()
 
-        # 4. Qwen3.5 deepstack: inject the auxiliary visual features.
+        # Qwen3.5 deepstack: inject the auxiliary visual features.
         visual_pos_masks = None
         if deepstack_feature_lists is not None:
             primary = modality_embeddings.get(VISION_MODALITY_NAME)
@@ -1101,9 +1102,10 @@ def prepare_qwen35_grid_batch(
 ) -> dict[str, Any]:
     """Prepare the global micro-batch for this rank's grid module role.
 
-    Every data-loading rank samples the *same* global micro-batch
-    (``args.data_parallel_size == 1`` in grid mode, broadcast over the world
-    TP group).  This function then:
+    Every data-loading rank samples the *same* global micro-batch: the
+    grid sampler shard covers the whole WORLD group
+    (``args.data_parallel_size == 1`` in grid mode; see
+    ``get_dataloader_shard_policy``).  This function then:
 
     1. drops the raw modality inputs on language-only ranks (they consume
        encoder outputs from the MIMO bridge) and assembles the exact kwargs
@@ -1154,8 +1156,9 @@ def build_qwen35_grid_mimo_model(
 ):
     """Build the non-colocated grid Qwen3.5 MIMO model (MCore MimoModel path).
 
-    Every rank participates in exactly one module; the language module config
-    mirrors the global args (TP/PP below are the language's).  Order matters:
+    Every rank participates in exactly one module; the global config object
+    is consumed with TP/PP/DP overwritten from the language module layout.
+    Order matters:
     config build + validation, infra/process groups, module-local config,
     uneven PP layer split, per-module sequence parallel, per-module RNG,
     language PP-rank spec rebuild, then the provider and training-state
@@ -1271,7 +1274,7 @@ def build_qwen35_grid_mimo_model(
         pre_process = post_process = True
 
     # The language layer spec must describe *this* rank's PP stage.  It was
-    # built from the pre-mutation config (global TP=1/PP=1), so both stages
+    # built from the pre-mutation config (global TP=1/PP=1), so every stage
     # would slice all ``config.num_layers`` layer specs and save overlapping
     # checkpoint keys.  Rebuild with the language module's explicit PP rank
     # (offset/count from the language config's pipeline fields); the built

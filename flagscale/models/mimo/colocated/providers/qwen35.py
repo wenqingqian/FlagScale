@@ -34,6 +34,7 @@ from flagscale.models.mimo.colocated import (
     build_colocated_pg_collections,
     validate_mimo_config,
 )
+from flagscale.models.mimo.colocated.config import COLOCATED_LANGUAGE_MODULE_NAME
 from flagscale.models.mimo.colocated.model import ColocatedMIMOModel
 from flagscale.models.mimo.colocated.parallel_state_ctx import switch_parallel_state
 from flagscale.models.mimo.colocated.utils import compute_microbatch_token_counts
@@ -143,7 +144,6 @@ class Qwen35ColocatedMIMOModel(ColocatedMIMOModel):
         self.add_encoder = add_encoder
         self.add_decoder = add_decoder
 
-        # Build vision module under the vision parallel context.
         if self.pre_process and self.add_encoder:
             with switch_parallel_state(self.vision_pg):
                 self.vision_model = Qwen3VisionModel(
@@ -156,7 +156,6 @@ class Qwen35ColocatedMIMOModel(ColocatedMIMOModel):
                     post_process=True,
                 )
 
-        # Build language module under the language parallel context.
         with switch_parallel_state(self.language_pg):
             self.language_model = Qwen35LanguageModule(
                 config=language_transformer_config,
@@ -250,7 +249,6 @@ class Qwen35ColocatedMIMOModel(ColocatedMIMOModel):
         extra_block_kwargs: dict | None = None,
         vision_output: dict | None = None,
     ) -> torch.Tensor:
-        """Forward function of Qwen3.5 MIMO model."""
         use_inference_kv_cache = (
             inference_params is not None
             and "image_tokens_count" in inference_params.key_value_memory_dict
@@ -392,7 +390,6 @@ def build_qwen35_colocated_mimo_model(
     )
     print_rank_0(f"MIMO process group collections: {pg_summary}")
 
-    # Single-point validation of model-agnostic MIMO config constraints.
     vit_batch_factor = validate_mimo_config(
         args, vision_parallelism, language_parallelism, get_num_microbatches()
     )
@@ -432,5 +429,5 @@ def build_qwen35_colocated_mimo_model(
 
     # Attach the language pg_collection to the wrapper for compatibility with
     # code that expects a top-level pg_collection attribute.
-    model.pg_collection = pg_collections["language"]
+    model.pg_collection = pg_collections[COLOCATED_LANGUAGE_MODULE_NAME]
     return model

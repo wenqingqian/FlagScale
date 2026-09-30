@@ -157,7 +157,12 @@ class ColocatedMIMOModel(MegatronModule):
         freeze_vision_model: bool,
         freeze_vision_projection: bool,
     ):
-        """Freeze model modules."""
+        """Freeze the selected modules.
+
+        Also records ``_vision_frozen``: a frozen ViT runs under
+        ``torch.no_grad`` (pure feature extractor) and skips the
+        requires_grad marking used by the delayed ViT backward.
+        """
         self._vision_frozen = freeze_vision_model and self.vision_model is not None
         modules = []
         if freeze_language_model and self.language_model is not None:
