@@ -15,7 +15,6 @@ outside the grid).
 
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -24,16 +23,12 @@ import torch.distributed as dist
 from megatron.core.distributed.finalize_model_grads import (
     finalize_model_grads as _finalize_model_grads,
 )
-from megatron.core.models.mimo import MimoModel
 from megatron.core.models.mimo.config.role import MIMO_LANGUAGE_MODULE_KEY
 from megatron.core.process_groups_config import MultiModuleProcessGroupCollection
 
 if TYPE_CHECKING:
     from megatron.core.hyper_comm_grid import HyperCommGrid
     from megatron.core.process_groups_config import ProcessGroupCollection
-
-
-logger = logging.getLogger(__name__)
 
 
 def _get_dp_size_from_grid(grid: HyperCommGrid) -> int:
@@ -44,30 +39,6 @@ def _get_dp_size_from_grid(grid: HyperCommGrid) -> int:
     """
     dp_idx = grid.dim_names.index("dp")
     return grid.shape[dp_idx]
-
-
-def unwrap_mimo_model(model) -> MimoModel:
-    """Unwrap Float16Module/DDP wrappers to get the underlying MimoModel.
-
-    Mixed-precision training wraps models in Float16Module; unwrapping exposes
-    MimoModel-specific attributes (``role``, ``mimo_config``,
-    ``language_model``, ``modality_submodules``, ...).
-
-    Args:
-        model: A MimoModel or a wrapped version (Float16Module, DDP).
-
-    Returns:
-        The underlying MimoModel instance.
-
-    Raises:
-        RuntimeError: If the model cannot be unwrapped to a MimoModel.
-    """
-    unwrapped = model
-    while not isinstance(unwrapped, MimoModel) and hasattr(unwrapped, "module"):
-        unwrapped = unwrapped.module
-    if not isinstance(unwrapped, MimoModel):
-        raise RuntimeError(f"Failed to unwrap model to MimoModel, got {type(unwrapped)}")
-    return unwrapped
 
 
 def is_current_rank_in_grid(grid: HyperCommGrid) -> bool:
@@ -93,47 +64,6 @@ def get_active_module_pg(
         f"got {len(active)}. Colocated MIMO is not supported by this code path."
     )
     return active[0]
-
-
-def get_module_to_grid_tuple(
-    mimo_model,
-    module_to_grid_map: dict[str, HyperCommGrid],
-) -> list[tuple]:
-    """Build a list of (module, grid) tuples for all modules the current rank participates in.
-
-    Note:
-        The returned modules are the RAW unwrapped submodules (Float16Module /
-        DDP wrappers stripped).  ``multimodule_no_sync`` and
-        ``zero_grad_buffer_for_multimodule`` call DDP-only methods
-        (``no_sync`` / ``zero_grad_buffer``), so callers must wrap each
-        submodule in ``DistributedDataParallel`` before consuming this tuple;
-        the utilities fail fast when the DDP-only methods are missing instead
-        of silently skipping.
-    """
-    module_to_grid_tuple = []
-
-    # Unwrap Float16Module/DDP if present (used in mixed precision training).
-    unwrapped_model = unwrap_mimo_model(mimo_model)
-
-    for module_name, grid in module_to_grid_map.items():
-        if not is_current_rank_in_grid(grid):
-            continue
-
-        # Get the actual module from the unwrapped model.
-        if module_name == MIMO_LANGUAGE_MODULE_KEY:
-            module = unwrapped_model.language_model
-        elif (
-            hasattr(unwrapped_model, "modality_submodules")
-            and module_name in unwrapped_model.modality_submodules
-        ):
-            module = unwrapped_model.modality_submodules[module_name]
-        else:
-            logger.warning(f"Module {module_name} not found in MimoModel, skipping")
-            continue
-
-        module_to_grid_tuple.append((module, grid))
-
-    return module_to_grid_tuple
 
 
 def build_pg_collection_for_schedule(
@@ -179,9 +109,8 @@ def multimodule_no_sync(*, module_to_grid_tuple: list[tuple]):
 
     Raises:
         AttributeError: If a participating module is not DDP-wrapped
-            (missing ``no_sync``).  ``get_module_to_grid_tuple`` returns RAW
-            unwrapped modules; failing fast beats silently running without
-            gradient-sync control.
+            (missing ``no_sync``); failing fast beats silently running
+            without gradient-sync control.
     """
     contexts = []
     for module, grid in module_to_grid_tuple:
@@ -189,8 +118,7 @@ def multimodule_no_sync(*, module_to_grid_tuple: list[tuple]):
             if not hasattr(module, "no_sync"):
                 raise AttributeError(
                     f"module {type(module).__name__} has no 'no_sync' method; "
-                    "multimodule_no_sync requires DDP-wrapped modules "
-                    "(get_module_to_grid_tuple returns raw unwrapped modules)"
+                    "multimodule_no_sync requires DDP-wrapped modules"
                 )
             contexts.append(module.no_sync())
 
@@ -330,27 +258,6 @@ def finalize_model_grads_multimodule(
                         module.scale_gradients(float(module_dp) / float(llm_dp))
 
 
-def zero_grad_buffer_for_multimodule(module_to_grid_tuple: list[tuple]):
-    """Reset gradient buffers for all DDP-wrapped modules.
-
-    Raises:
-        AttributeError: If a participating module is not DDP-wrapped
-            (missing ``zero_grad_buffer``).  It must raise rather than be
-            silently skipped: otherwise gradient buffers are never reset and
-            gradients silently accumulate across optimizer steps.
-    """
-    for module, grid in module_to_grid_tuple:
-        if module is not None and is_current_rank_in_grid(grid):
-            if not hasattr(module, "zero_grad_buffer"):
-                raise AttributeError(
-                    f"module {type(module).__name__} has no 'zero_grad_buffer' "
-                    "method; zero_grad_buffer_for_multimodule requires "
-                    "DDP-wrapped modules (get_module_to_grid_tuple returns raw "
-                    "unwrapped modules)"
-                )
-            module.zero_grad_buffer()
-
-
 def validate_no_stub_ranks(module_to_grid_map: dict[str, HyperCommGrid], world_size: int):
     """Ensure every rank participates in at least one module.
 
@@ -378,40 +285,3 @@ def validate_no_stub_ranks(module_to_grid_map: dict[str, HyperCommGrid], world_s
             f"Stub ranks are not supported. Adjust parallelism config to use all {world_size} GPUs, "
             f"or reduce world_size to {len(participating_ranks)}."
         )
-
-
-def validate_data_loader_contract(
-    module_to_grid_map: dict[str, HyperCommGrid],
-    global_batch_size: int,
-    micro_batch_size: int,
-    num_microbatches: int,
-):
-    """Validate data loading constraints for multimodule training.
-
-    Checks:
-    - MIMO micro-batch size divisible by all module DP sizes
-    - Global batch size divisible by all module DP sizes
-    - num_microbatches * micro_batch_size == global_batch_size
-
-    Raises:
-        ValueError: If any constraint is violated.
-    """
-    expected = num_microbatches * micro_batch_size
-    if expected != global_batch_size:
-        raise ValueError(
-            f"Microbatch mismatch: {num_microbatches} * {micro_batch_size} = {expected} "
-            f"!= global_batch_size ({global_batch_size})"
-        )
-
-    for module_name, grid in module_to_grid_map.items():
-        dp_size = _get_dp_size_from_grid(grid)
-
-        if micro_batch_size % dp_size != 0:
-            raise ValueError(
-                f"Micro batch size {micro_batch_size} not divisible by {module_name} DP size {dp_size}"
-            )
-
-        if global_batch_size % dp_size != 0:
-            raise ValueError(
-                f"Global batch size {global_batch_size} not divisible by {module_name} DP size {dp_size}"
-            )

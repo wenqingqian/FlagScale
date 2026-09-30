@@ -7,12 +7,16 @@ import torch.distributed as dist
 
 from megatron.core.process_groups_config import ProcessGroupCollection
 
-from .config import ModuleParallelismConfig
+from .config import (
+    COLOCATED_LANGUAGE_MODULE_NAME,
+    COLOCATED_VISION_MODULE_NAME,
+    ColocatedModuleParallelismConfig,
+)
 
 
 def _validate_module_parallelism(
     module_name: str,
-    cfg: ModuleParallelismConfig,
+    cfg: ColocatedModuleParallelismConfig,
     world_size: int,
 ):
     """Ensure module parallelism sizes multiply to world size and CP is 1."""
@@ -95,7 +99,7 @@ def _compute_rank_groups(
 
 def _create_module_pg_collection(
     module_name: str,
-    cfg: ModuleParallelismConfig,
+    cfg: ColocatedModuleParallelismConfig,
     world_size: int,
     build_embedding_groups: bool = False,
 ) -> tuple[ProcessGroupCollection, torch.distributed.ProcessGroup, torch.distributed.ProcessGroup]:
@@ -303,8 +307,8 @@ def _validate_colocated_rank_mapping(
 
 
 def build_colocated_pg_collections(
-    vision_parallelism: ModuleParallelismConfig,
-    language_parallelism: ModuleParallelismConfig,
+    vision_parallelism: ColocatedModuleParallelismConfig,
+    language_parallelism: ColocatedModuleParallelismConfig,
     world_size: int,
 ) -> dict[str, ProcessGroupCollection]:
     """Build ProcessGroupCollection objects for colocated vision and language modules.
@@ -312,18 +316,26 @@ def build_colocated_pg_collections(
     Returns:
         Dict mapping module names to ProcessGroupCollection.
     """
-    _validate_module_parallelism("vision", vision_parallelism, world_size)
-    _validate_module_parallelism("language", language_parallelism, world_size)
+    _validate_module_parallelism(COLOCATED_VISION_MODULE_NAME, vision_parallelism, world_size)
+    _validate_module_parallelism(COLOCATED_LANGUAGE_MODULE_NAME, language_parallelism, world_size)
 
     # Vision groups first, then language groups, for a deterministic global
     # creation order across all ranks.  Only language needs real embedding
     # groups (tied embedding/output weights across PP stages); vision is
     # never pipelined and keeps singletons.
-    vision_pg, _, _ = _create_module_pg_collection("vision", vision_parallelism, world_size)
+    vision_pg, _, _ = _create_module_pg_collection(
+        COLOCATED_VISION_MODULE_NAME, vision_parallelism, world_size
+    )
     language_pg, _, _ = _create_module_pg_collection(
-        "language", language_parallelism, world_size, build_embedding_groups=True
+        COLOCATED_LANGUAGE_MODULE_NAME,
+        language_parallelism,
+        world_size,
+        build_embedding_groups=True,
     )
 
     _validate_colocated_rank_mapping(vision_pg, language_pg, world_size)
 
-    return {"vision": vision_pg, "language": language_pg}
+    return {
+        COLOCATED_VISION_MODULE_NAME: vision_pg,
+        COLOCATED_LANGUAGE_MODULE_NAME: language_pg,
+    }

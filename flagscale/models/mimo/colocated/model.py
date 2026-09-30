@@ -20,6 +20,7 @@ import torch.distributed as dist
 
 from megatron.core.transformer import MegatronModule
 
+from .config import COLOCATED_LANGUAGE_MODULE_NAME, COLOCATED_VISION_MODULE_NAME
 from .macro_exchange import exchange_macro_outputs, get_my_microbatch_range
 from .parallel_state_ctx import switch_parallel_state
 from .scheduler import MIMOMicrobatchScheduler
@@ -45,8 +46,8 @@ class ColocatedMIMOModel(MegatronModule):
         super().__init__(config=config)
 
         self.pg_collections = pg_collections
-        self.vision_pg = pg_collections["vision"]
-        self.language_pg = pg_collections["language"]
+        self.vision_pg = pg_collections[COLOCATED_VISION_MODULE_NAME]
+        self.language_pg = pg_collections[COLOCATED_LANGUAGE_MODULE_NAME]
 
         # Assigned by the subclass after __init__ (under each module's parallel context).
         self.vision_model = None

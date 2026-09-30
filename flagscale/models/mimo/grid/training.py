@@ -135,7 +135,7 @@ def reconfigure_grid_num_microbatches_calculator(args) -> None:
     """Reconfigure the global num-microbatches calculator to grid-mode DP=1.
 
     Parse time initializes the calculator with the YAML's global data
-    parallel size, but grid mode forces the global parallel state to DP=1
+    parallel size, but grid mode computes num-microbatches at DP=1
     (module-local DP slicing happens in the forward step), so the calculator
     must be rebased to DP=1 before the grid batch contract
     (``validate_grid_batch_divisibility``) and the schedule consume it.  Uses
@@ -261,6 +261,82 @@ def validate_grid_runtime_contract(args) -> None:
         raise ValueError("--mimo-layout=grid does not support MoE/num_experts in this stage.")
     if getattr(args, "virtual_pipeline_model_parallel_size", None) is not None:
         raise ValueError("--mimo-layout=grid does not support virtual pipeline parallelism.")
+
+
+def apply_grid_runtime_setup(args) -> None:
+    """Run the runtime contract and forced-layout setup for the grid layout.
+
+    Rejects flags that would silently conflict with the grid path's own
+    layout derivation, pins args-level TP/PP/DP to 1 (module layouts come
+    exclusively from ``--mimo-module-specs``; Megatron then re-derives the
+    global DP from the world size), preserves
+    the user's SP intent in ``args.mimo_sequence_parallel`` and rebases the
+    num-microbatches calculator to the forced DP=1.
+    """
+    validate_grid_runtime_contract(args)
+    if args.mimo_module_specs is None:
+        raise ValueError(
+            "--mimo-layout=grid requires --mimo-module-specs, e.g. "
+            "'images=tp=2,dp=1; language=tp=1,pp=1,dp=6,rank_offset=2'."
+        )
+    if args.ckpt_format != "torch_dist":
+        raise ValueError(
+            "--mimo-layout=grid requires --ckpt-format=torch_dist (the "
+            "grid path saves via MCore sharded state dicts)."
+        )
+    if args.rampup_batch_size is not None:
+        raise ValueError("--mimo-layout=grid does not support rampup_batch_size (fail-fast).")
+    if args.pipeline_model_parallel_layout is not None:
+        raise ValueError(
+            "--mimo-layout=grid does not support --pipeline-model-parallel-layout: "
+            "the grid path allocates the language pipeline stages itself "
+            "(even or uneven first/last split from --num-layers and the "
+            "language PP in --mimo-module-specs) (fail-fast)."
+        )
+    if (
+        getattr(args, "decoder_first_pipeline_num_layers", None) is not None
+        or getattr(args, "decoder_last_pipeline_num_layers", None) is not None
+    ):
+        raise ValueError(
+            "--mimo-layout=grid does not support "
+            "--decoder-first-pipeline-num-layers / "
+            "--decoder-last-pipeline-num-layers: the grid path computes "
+            "the first/last stage layer counts itself (base+remainder / "
+            "base when the layer count is not divisible by the language "
+            "PP) (fail-fast)."
+        )
+    if getattr(args, "account_for_embedding_in_pipeline_split", False) or getattr(
+        args, "account_for_loss_in_pipeline_split", False
+    ):
+        raise ValueError(
+            "--mimo-layout=grid does not support "
+            "--account-for-embedding-in-pipeline-split / "
+            "--account-for-loss-in-pipeline-split: MCore's uneven "
+            "pipeline allocation (used when the layer count is not "
+            "divisible by the language PP) is incompatible with "
+            "standalone embedding/loss stages (fail-fast)."
+        )
+    args.tensor_model_parallel_size = 1
+    args.pipeline_model_parallel_size = 1
+    args.data_parallel_size = 1
+    args.context_parallel_size = 1
+    args.expert_model_parallel_size = 1
+    # SP cannot survive the forced global TP=1 (ModelParallelConfig
+    # rejects SP without TP); the user's intent is preserved in
+    # args.mimo_sequence_parallel and resolved per module at model
+    # build time.  Fall back to the raw value if the parse-time
+    # contract did not run.
+    if not hasattr(args, "mimo_sequence_parallel"):
+        args.mimo_sequence_parallel = args.sequence_parallel
+    args.sequence_parallel = False
+    reconfigure_grid_num_microbatches_calculator(args)
+    from megatron.training.utils import print_rank_0
+
+    print_rank_0(
+        "> non-colocated grid MIMO: args-level TP/PP/DP pinned to 1; "
+        "module layouts from --mimo-module-specs "
+        "(global DP re-derives from the world size)"
+    )
 
 
 @dataclass

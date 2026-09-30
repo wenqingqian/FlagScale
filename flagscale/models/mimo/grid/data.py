@@ -2,26 +2,24 @@
 
 """Rank-aware data-loading utilities for MIMO (FlagScale-native).
 
-Port of the Megatron-Bridge ``data/megatron_mimo/dp_utils.py`` concepts with
-no Bridge or distributed dependency: sampling info, data-needed-by-role
-decisions, and DP slicing of a global micro-batch into module-local shards.
-Pure functions of explicit dataclasses and tensors, unit-testable on CPU
-without process groups.
+Module data roles and DP slicing of a global micro-batch into module-local
+shards.  Pure functions of explicit dataclasses and tensors, unit-testable
+on CPU without process groups.
 
 Conventions:
 
-- Every data-loading rank samples the same global micro-batch
-  (``sampler_dp_size=1``); per-module DP sub-sharding is deferred to
-  :func:`slice_batch_for_module_dp` in the forward step, matching the
-  MIMO bridge's contiguous batch-dimension split/concatenate routing.
+- Every data-loading rank samples the same global micro-batch; per-module
+  DP sub-sharding is deferred to :func:`slice_batch_for_module_dp` in the
+  forward step, matching the MIMO bridge's contiguous batch-dimension
+  split/concatenate routing.
 - Multimodal MRoPE ``position_ids`` are ``[3, batch, seq]``; their
   batch dimension is 1 (:func:`_batch_dim_for_tensor`).
 - Patch-packed visual inputs (``{hidden_states, grid_thw, ...}``) use dim 0
   for different units across fields (patches vs images) and are sliced
   jointly (:func:`is_patch_packed_visual_dict`).
-- Language-only ranks (non-colocated layouts) consume encoder outputs from
-  the MIMO bridge; raw modality inputs are dropped before DP slicing
-  (:func:`should_drop_modality_inputs`).
+- Language-only ranks consume encoder outputs from the MIMO bridge; raw
+  modality inputs are dropped before DP slicing
+  (:func:`drop_modality_inputs`).
 """
 
 from __future__ import annotations
@@ -35,12 +33,7 @@ import torch
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-from .parallelism import (
-    LANGUAGE_MODULE_NAME,
-    MIMOLayout,
-    MIMOParallelismConfig,
-    classify_layout,
-)
+from .parallelism import LANGUAGE_MODULE_NAME
 
 
 @dataclass(frozen=True)
@@ -85,63 +78,6 @@ class ModuleDataRole:
     def is_last_stage(self) -> bool:
         """Whether this role sits on the module's last PP stage."""
         return self.pp_rank == self.pp_size - 1
-
-
-def needs_data_for_role(role: ModuleDataRole) -> bool:
-    """Decide whether a rank must load a data batch for its module.
-
-    Language: every PP stage needs batch metadata - first stages consume
-    ``input_ids``, last stages consume ``labels``/``loss_mask``, and MRoPE-style
-    models also need ``position_ids`` on intermediate PP stages. Modality
-    modules: only the first PP stage needs raw modality inputs.
-    """
-    if role.is_language:
-        return True
-    return role.is_first_stage
-
-
-@dataclass(frozen=True)
-class SamplingInfo:
-    """Sampler-level DP settings for a data-loading rank.
-
-    Every data-loading rank samples with ``sampler_dp_size=1`` so all ranks
-    load identical global micro-batches; module-local DP slicing is deferred
-    to :func:`slice_batch_for_module_dp` in the forward step. Do **not** use
-    these values to construct a ``DistributedSampler`` for per-module
-    sharding - they are deliberately un-sharded at the sampler level.
-    """
-
-    sampler_dp_rank: int = 0
-    sampler_dp_size: int = 1
-    needs_data: bool = False
-
-    def __post_init__(self) -> None:
-        assert isinstance(self.sampler_dp_size, int) and not isinstance(
-            self.sampler_dp_size, bool
-        ), f"sampler_dp_size must be an integer, got {self.sampler_dp_size!r}."
-        assert self.sampler_dp_size >= 1, (
-            f"sampler_dp_size must be >= 1, got {self.sampler_dp_size}."
-        )
-        assert isinstance(self.sampler_dp_rank, int) and not isinstance(
-            self.sampler_dp_rank, bool
-        ), f"sampler_dp_rank must be an integer, got {self.sampler_dp_rank!r}."
-        assert 0 <= self.sampler_dp_rank < self.sampler_dp_size, (
-            f"sampler_dp_rank {self.sampler_dp_rank} out of range [0, {self.sampler_dp_size})."
-        )
-
-
-def get_sampling_info(role: ModuleDataRole) -> SamplingInfo:
-    """Return the sampler settings for a rank's module role.
-
-    All data-loading ranks share ``sampler_dp_rank=0, sampler_dp_size=1`` so
-    they stay synchronised on the same sample order; the per-module
-    sub-sharding happens later in :func:`slice_batch_for_module_dp`.
-    """
-    return SamplingInfo(
-        sampler_dp_rank=0,
-        sampler_dp_size=1,
-        needs_data=needs_data_for_role(role),
-    )
 
 
 def _batch_dim_for_tensor(key: str, value: torch.Tensor) -> int:
@@ -235,8 +171,8 @@ def slice_batch_for_module_dp(
 ) -> dict[str, Any]:
     """Slice a global micro-batch for this rank's module-local DP shard.
 
-    All data-loading ranks receive the same global micro-batch (the sampler
-    uses ``sampler_dp_size=1``); the slicing is contiguous to match the MIMO
+    All data-loading ranks receive the same global micro-batch unsharded;
+    the slicing is contiguous to match the MIMO
     bridge's batch-dimension split/concatenate fan-out and fan-in routing.
     Nested dicts (e.g. ``modality_inputs``) are recursed into; patch-packed
     ``{hidden_states, grid_thw}`` visual inputs are joint-sliced (see
@@ -304,30 +240,6 @@ def slice_batch_for_module_dp(
     return sliced
 
 
-def should_drop_modality_inputs(
-    role: ModuleDataRole,
-    config: MIMOParallelismConfig,
-    world_size: int,
-) -> bool:
-    """Decide whether this rank must drop raw modality inputs from its batch.
-
-    In a non-colocated layout, language-only ranks consume encoder outputs
-    from the MIMO bridge instead of raw modality inputs, so the raw inputs
-    are dropped before DP slicing (their leading dimension is not the
-    language sample batch). Colocated language ranks also host the vision
-    module and keep the raw inputs.
-    """
-    assert role.is_language, (
-        f"should_drop_modality_inputs is only meaningful for language ranks, "
-        f"got role for module {role.module_name!r}."
-    )
-    if config.layout is MIMOLayout.AUTO:
-        layout = classify_layout(config.module_parallelisms, world_size)
-    else:
-        layout = config.layout
-    return layout is MIMOLayout.NON_COLOCATED
-
-
 def drop_modality_inputs(batch: Mapping[str, Any]) -> dict[str, Any]:
     """Return a copy of ``batch`` with the raw modality inputs set to None.
 
@@ -344,35 +256,3 @@ def drop_modality_inputs(batch: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("imgs", "videos", "image_thw_grids", "video_thw_grids"):
         out[key] = None
     return out
-
-
-def prepare_batch_for_module(
-    batch: Mapping[str, Any],
-    dp_rank: int,
-    dp_size: int,
-    role: ModuleDataRole,
-    config: MIMOParallelismConfig,
-    world_size: int,
-) -> dict[str, Any]:
-    """Prepare a global micro-batch for a rank's module-local DP shard.
-
-    1. Drop modality inputs on language-only ranks (non-colocated layout):
-       they consume encoder outputs from the bridge, and the raw modality
-       tensors' leading dimension is not the language sample batch.
-    2. Contiguously slice the batch for the module-local DP shard (see
-       :func:`slice_batch_for_module_dp`).
-
-    Args:
-        batch: Global batch dict (same object on every data-loading rank).
-        dp_rank: This rank's position in its module-local DP group.
-        dp_size: Size of the module-local DP group.
-        role: This rank's module role.
-        config: Finalized MIMO parallelism configuration.
-        world_size: Total number of ranks (used to resolve AUTO layout).
-
-    Returns:
-        The module-local batch dict ready for the forward step.
-    """
-    if role.is_language and should_drop_modality_inputs(role, config, world_size):
-        batch = drop_modality_inputs(batch)
-    return slice_batch_for_module_dp(batch, dp_rank, dp_size)

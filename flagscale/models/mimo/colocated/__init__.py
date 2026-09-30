@@ -8,7 +8,7 @@ drives throughput.  Production path behind ``--use-mimo`` with
 ``--mimo-layout=colocated``.
 """
 
-from .config import ModuleParallelismConfig, validate_mimo_config
+from .config import ColocatedModuleParallelismConfig, validate_mimo_config
 from .hetero_pg_utils import build_colocated_pg_collections
 from .model import ColocatedMIMOModel
 from .optimizer import (
@@ -25,7 +25,7 @@ from .utils import (
 )
 
 __all__ = [
-    "ModuleParallelismConfig",
+    "ColocatedModuleParallelismConfig",
     "validate_mimo_config",
     "build_colocated_pg_collections",
     "switch_parallel_state",

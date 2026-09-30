@@ -21,10 +21,7 @@ import torch.distributed as dist
 
 from megatron.core.hyper_comm_grid import HyperCommGrid
 from megatron.core.models.mimo import MimoModel, MimoModelConfig
-from megatron.core.models.mimo.config.role import (
-    MIMO_LANGUAGE_MODULE_KEY,
-    ModuleLayout,
-)
+from megatron.core.models.mimo.config.role import ModuleLayout
 from megatron.core.models.mimo.submodules.vision import VisionModalitySubmodules
 from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.core.packed_seq_params import PackedSeqParams
@@ -553,7 +550,7 @@ class Qwen35GridMIMOModel(MimoModel):
                     and self.mimo_config.module_to_grid_map
                 ):
                     encoder_grid = self.mimo_config.module_to_grid_map[encoder_name]
-                    language_grid = self.mimo_config.module_to_grid_map[MIMO_LANGUAGE_MODULE_KEY]
+                    language_grid = self.mimo_config.module_to_grid_map[LANGUAGE_MODULE_NAME]
                     if hasattr(encoder_grid, "shape") and "dp" in encoder_grid.dim_names:
                         encoder_dp = encoder_grid.shape[encoder_grid.dim_names.index("dp")]
                         language_dp = language_grid.shape[language_grid.dim_names.index("dp")]
@@ -993,7 +990,7 @@ def _build_language_forward_kwargs(
     """
     data_batch = drop_modality_inputs(batch)
     data_batch = slice_batch_for_module_dp(data_batch, dp_rank, dp_size)
-    role = ModuleDataRole(module_name=MIMO_LANGUAGE_MODULE_KEY, pp_rank=pp_rank, pp_size=pp_size)
+    role = ModuleDataRole(module_name=LANGUAGE_MODULE_NAME, pp_rank=pp_rank, pp_size=pp_size)
     image_input_mask = data_batch.get("image_input_mask")
     video_start_index = (
         int(image_input_mask.sum().item()) if torch.is_tensor(image_input_mask) else 0

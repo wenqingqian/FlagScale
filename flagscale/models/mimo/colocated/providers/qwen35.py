@@ -30,7 +30,7 @@ from flagscale.models.megatron.qwen35.language_model import Qwen35LanguageModule
 from flagscale.models.megatron.qwen35.rope import get_rope_index
 from flagscale.models.megatron.qwen35.transformer_config import Qwen35TransformerConfig
 from flagscale.models.mimo.colocated import (
-    ModuleParallelismConfig,
+    ColocatedModuleParallelismConfig,
     build_colocated_pg_collections,
     validate_mimo_config,
 )
@@ -41,7 +41,7 @@ from flagscale.models.mimo.colocated.utils import compute_microbatch_token_count
 
 def build_qwen35_colocated_parallelism(
     args,
-) -> tuple[ModuleParallelismConfig, ModuleParallelismConfig]:
+) -> tuple[ColocatedModuleParallelismConfig, ColocatedModuleParallelismConfig]:
     """Derive the ``(vision, language)`` module parallelisms from the global args.
 
     Vision TP/PP default to the language sizes; vision DP is always derived
@@ -56,12 +56,12 @@ def build_qwen35_colocated_parallelism(
         or args.pipeline_model_parallel_size
     )
     vision_dp = world_size // vision_tp // vision_pp
-    vision_parallelism = ModuleParallelismConfig(
+    vision_parallelism = ColocatedModuleParallelismConfig(
         tensor_model_parallel_size=vision_tp,
         pipeline_model_parallel_size=vision_pp,
         data_parallel_size=vision_dp,
     )
-    language_parallelism = ModuleParallelismConfig(
+    language_parallelism = ColocatedModuleParallelismConfig(
         tensor_model_parallel_size=args.tensor_model_parallel_size,
         pipeline_model_parallel_size=args.pipeline_model_parallel_size,
         data_parallel_size=(

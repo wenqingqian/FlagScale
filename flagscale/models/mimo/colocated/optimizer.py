@@ -24,6 +24,7 @@ from megatron.core.utils import log_single_rank, unwrap_model
 from megatron.plugin.platform import get_platform
 
 from ..ddp_utils import build_mimo_ddp_config, get_mimo_ddp_wrappers, patch_mimo_model_chunk
+from .config import COLOCATED_LANGUAGE_MODULE_NAME, COLOCATED_VISION_MODULE_NAME
 from .parallel_state_ctx import switch_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ def wrap_mimo_ddp(mimo_model, args) -> None:
                     module=mimo_model.vision_model,
                 ),
             )
-            module_to_ddp["vision"] = mimo_model.vision_ddp
+            module_to_ddp[COLOCATED_VISION_MODULE_NAME] = mimo_model.vision_ddp
 
     with switch_parallel_state(mimo_model.language_pg):
         language_dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
@@ -103,7 +104,7 @@ def wrap_mimo_ddp(mimo_model, args) -> None:
                 module=mimo_model.language_model,
             ),
         )
-        module_to_ddp["language"] = mimo_model.language_ddp
+        module_to_ddp[COLOCATED_LANGUAGE_MODULE_NAME] = mimo_model.language_ddp
     object.__setattr__(mimo_model, "module_to_ddp", module_to_ddp)
 
 

@@ -4,9 +4,15 @@
 
 from dataclasses import dataclass
 
+# Canonical module names of the colocated layout: keys of the pg-collection
+# dict, the module-to-DDP mapping, and validation labels.  The grid layout
+# names modules after the MCore module keys in --mimo-module-specs instead.
+COLOCATED_VISION_MODULE_NAME = "vision"
+COLOCATED_LANGUAGE_MODULE_NAME = "language"
+
 
 @dataclass
-class ModuleParallelismConfig:
+class ColocatedModuleParallelismConfig:
     """Parallelism configuration for a single MIMO module.
 
     All sizes must multiply to the world size for colocated deployment.
@@ -54,8 +60,8 @@ def compute_vit_batch_factor(
 
 def validate_mimo_config(
     args,
-    vision_parallelism: ModuleParallelismConfig,
-    language_parallelism: ModuleParallelismConfig,
+    vision_parallelism: ColocatedModuleParallelismConfig,
+    language_parallelism: ColocatedModuleParallelismConfig,
     num_microbatches: int,
 ) -> int:
     """Validate all model-agnostic MIMO configuration constraints in one place.
@@ -72,7 +78,10 @@ def validate_mimo_config(
         "ChainedOptimizer returns a list of optimizer state dicts, which only the "
         "legacy 'torch' checkpoint path handles; torch_dist support is future work."
     )
-    for name, parallelism in (("vision", vision_parallelism), ("language", language_parallelism)):
+    for name, parallelism in (
+        (COLOCATED_VISION_MODULE_NAME, vision_parallelism),
+        (COLOCATED_LANGUAGE_MODULE_NAME, language_parallelism),
+    ):
         assert parallelism.context_parallel_size == 1, (
             f"Colocated MIMO currently requires CP=1, got {name} "
             f"cp={parallelism.context_parallel_size}."

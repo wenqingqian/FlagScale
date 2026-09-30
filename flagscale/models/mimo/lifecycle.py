@@ -9,8 +9,8 @@ construction, post-load param-group sync, gradient-sync hooks, forward-backward
 function, loss-reduction context, sample accounting, state destroy / release /
 drop, force-all-reduce, parse/runtime contracts, batch preparation and the
 dataloader shard policy.  Callers import only ``flagscale.models.mimo`` and
-never touch ``mimo.colocated`` / ``mimo.grid`` internals; the grid imports
-stay deferred so non-grid runs never pay for the MCore MIMO stack.
+never touch ``mimo.colocated`` / ``mimo.grid`` internals; this facade imports
+both layouts eagerly, so importing it always pulls in the MCore MIMO stack.
 """
 
 import functools
@@ -33,16 +33,15 @@ from .colocated.utils import (
 from .ddp_utils import get_mimo_ddp_wrappers
 from .grid.training import (
     apply_grid_parse_time_contract,
+    apply_grid_runtime_setup,
     build_grid_optimizer,
     configure_grid_model_config_hooks,
     destroy_grid_training_states,
     get_logical_iteration_samples as get_grid_logical_iteration_samples,
     grid_training_state_from_model_chunk,
     prepare_grid_batch,
-    reconfigure_grid_num_microbatches_calculator,
     setup_grid_mimo_ddp,
     sync_grid_optimizer_param_group_lr,
-    validate_grid_runtime_contract,
 )
 
 
@@ -73,12 +72,9 @@ def apply_parse_time_contract(args) -> None:
 def setup_mimo_runtime(args) -> None:
     """Runtime layout setup at the training entry (no-op for colocated).
 
-    Grid: run the layout runtime contract, reject flags that would silently
-    conflict with the grid path's own layout derivation, pin the global
-    parallel state to TP=1/PP=1/DP=1 (module layouts come exclusively from
-    ``--mimo-module-specs``), preserve the user's SP intent in
-    ``args.mimo_sequence_parallel`` and rebase the num-microbatches calculator
-    to the forced DP=1.
+    Grid: delegates to ``grid.training.apply_grid_runtime_setup`` — the
+    runtime contract, forced-layout pinning and the num-microbatches
+    calculator rebase.
     """
     if not _use_mimo(args):
         return
@@ -87,74 +83,7 @@ def setup_mimo_runtime(args) -> None:
         return
     if layout != "grid":
         raise ValueError(f"Unsupported --mimo-layout {layout!r}: expected 'colocated' or 'grid'")
-    validate_grid_runtime_contract(args)
-    if args.mimo_module_specs is None:
-        raise ValueError(
-            "--mimo-layout=grid requires --mimo-module-specs, e.g. "
-            "'images=tp=2,dp=1; language=tp=1,pp=1,dp=6,rank_offset=2'."
-        )
-    if args.ckpt_format != "torch_dist":
-        raise ValueError(
-            "--mimo-layout=grid requires --ckpt-format=torch_dist (the "
-            "grid path saves via MCore sharded state dicts)."
-        )
-    if args.rampup_batch_size is not None:
-        raise ValueError("--mimo-layout=grid does not support rampup_batch_size (fail-fast).")
-    # Pipeline-allocation overrides would silently conflict with the
-    # grid path's own PP layout / layer split (computed from
-    # --mimo-module-specs and --num-layers).
-    if args.pipeline_model_parallel_layout is not None:
-        raise ValueError(
-            "--mimo-layout=grid does not support --pipeline-model-parallel-layout: "
-            "the grid path allocates the language pipeline stages itself "
-            "(even or uneven first/last split from --num-layers and the "
-            "language PP in --mimo-module-specs) (fail-fast)."
-        )
-    if (
-        getattr(args, "decoder_first_pipeline_num_layers", None) is not None
-        or getattr(args, "decoder_last_pipeline_num_layers", None) is not None
-    ):
-        raise ValueError(
-            "--mimo-layout=grid does not support "
-            "--decoder-first-pipeline-num-layers / "
-            "--decoder-last-pipeline-num-layers: the grid path computes "
-            "the first/last stage layer counts itself (base+remainder / "
-            "base when the layer count is not divisible by the language "
-            "PP) (fail-fast)."
-        )
-    if getattr(args, "account_for_embedding_in_pipeline_split", False) or getattr(
-        args, "account_for_loss_in_pipeline_split", False
-    ):
-        raise ValueError(
-            "--mimo-layout=grid does not support "
-            "--account-for-embedding-in-pipeline-split / "
-            "--account-for-loss-in-pipeline-split: MCore's uneven "
-            "pipeline allocation (used when the layer count is not "
-            "divisible by the language PP) is incompatible with "
-            "standalone embedding/loss stages (fail-fast)."
-        )
-    # Backstop pinning of the forced global state (the parse-time
-    # contract already rejected non-default legacy parallel sizes).
-    args.tensor_model_parallel_size = 1
-    args.pipeline_model_parallel_size = 1
-    args.data_parallel_size = 1
-    args.context_parallel_size = 1
-    args.expert_model_parallel_size = 1
-    # SP cannot survive the forced global TP=1 (ModelParallelConfig
-    # rejects SP without TP); the user's intent is preserved in
-    # args.mimo_sequence_parallel and resolved per module at model
-    # build time.  Fall back to the raw value if the parse-time
-    # contract did not run.
-    if not hasattr(args, "mimo_sequence_parallel"):
-        args.mimo_sequence_parallel = args.sequence_parallel
-    args.sequence_parallel = False
-    reconfigure_grid_num_microbatches_calculator(args)
-    from megatron.training.utils import print_rank_0
-
-    print_rank_0(
-        "> non-colocated grid MIMO: global parallel state forced to "
-        "TP=1/PP=1/DP=1; module layouts from --mimo-module-specs"
-    )
+    apply_grid_runtime_setup(args)
 
 
 # ---------------------------------------------------------------------------
